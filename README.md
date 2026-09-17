@@ -628,21 +628,6 @@ dpkg -r anland
 
 ---
 
-## platform-tools
-
-The `platform-tools/` directory in this repo contains the Windows version of the Android SDK platform-tools (adb, fastboot, etc.) for pushing the scripts to the phone. This is **not required** to run the scripts — it's only useful for development and file transfer.
-
-```bash
-# Copy a script to the phone from Windows:
-platform-tools\adb.exe push xiaoian-wayland-kde.sh /data/local/tmp/
-platform-tools\adb.exe shell
-su
-cp /data/local/tmp/xiaoian-wayland-kde.sh /data/local/
-chmod +x /data/local/xiaoian-wayland-kde.sh
-```
-
----
-
 ## License
 
 MIT License — Copyright (c) 2026 Digheads
