@@ -1,0 +1,11 @@
+apply plugin: 'com.android.library'
+
+android.namespace 'com.termux.x11.shell_loader.stub'
+android.defaultConfig.minSdkVersion 24
+android.compileSdkVersion 35
+android.buildToolsVersion "36.0.0"
+android.buildFeatures.buildConfig false
+android.buildTypes.release.minifyEnabled false
+android.compileOptions.sourceCompatibility JavaVersion.VERSION_1_8
+android.compileOptions.targetCompatibility JavaVersion.VERSION_1_8
+dependencies.implementation 'androidx.annotation:annotation:1.10.0'
