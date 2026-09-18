@@ -15,7 +15,7 @@ The app does not use a Xiaoian `$PREFIX` (Change 1 below) for XFCE. It removes t
 | `$PREFIX` / `PATH` | Termux `$PREFIX/bin` first | No `$PREFIX`; `PATH=/system/bin:/system/xbin` |
 | `$TMPDIR` | `$PREFIX/tmp` (Termux) | `$INFRA_ROOT/tmp` (mode 1777), bind-mounted as chroot `/tmp` |
 | X server | `$PREFIX/bin/termux-x11` | APK via `app_process … CmdEntryPoint`, with `TMPDIR=<rootfs>/tmp` |
-| Downloads | `$PREFIX/bin/wget` | `http_get` / `http_cat` → app downloader `com.xiaoian.app.tools.Fetch` via `app_process`; Termux wget as fallback |
+| Downloads | `$PREFIX/bin/wget` | `http_get` / `http_cat` → app downloader `com.xiaoian.app.tools.Fetch` via `app_process`. No fallback |
 | Rootfs `.tar.xz` extraction | `$PREFIX/bin/tar` | `find_xz_tar`: Termux tar if installed, else Magisk / KernelSU / APatch busybox with `-J` |
 | Rootfs download | written directly to the target | `.part` file, renamed on success (a broken download is no longer treated as cached) |
 | PulseAudio | required (Termux) | Optional: started only if Termux + `pulseaudio` exist, otherwise the desktop runs **without sound** |
@@ -23,6 +23,45 @@ The app does not use a Xiaoian `$PREFIX` (Change 1 below) for XFCE. It removes t
 | `TERMUX_UID` | Fallback `10422` | Empty when Termux is missing (only used for PulseAudio) |
 
 Still open for XFCE: sound without Termux (see [09 R12](09-risks-and-mitigations.md#r12-sound-without-termux)).
+
+## Implemented: KDE (script 2.10.0)
+
+KDE followed XFCE off Termux. The display daemon was the last hard dependency:
+it used to be a Termux package (`dpkg -i anland_<version>_aarch64.deb`) found on
+`$PATH`. It now ships inside the APK.
+
+| Area | Before (Termux reference) | Now (`assets/xiaoian-wayland-kde.sh`) |
+|---|---|---|
+| `$PREFIX` / `PATH` | Termux `$PREFIX/bin` first | No `$PREFIX`; `PATH=/system/bin:/system/xbin` |
+| `$TMPDIR` | `$PREFIX/tmp` (Termux) | `/data/data/com.xiaoian.app/files/tmp`, bind-mounted as chroot `/tmp` |
+| Anland daemon | `anland` on `$PATH` (Termux package, installed by hand with `dpkg -i`) | `$ANLAND_BIN` → `libanland.so` in the APK's native library dir, passed in by the app. The script does no discovery of its own |
+| Daemon socket | `$TMPDIR/anland/display_daemon.sock` | `$TMPDIR/anland.sock` — what the daemon and the Android consumer actually use; the chroot sees it as `/tmp/anland.sock` |
+| Daemon logs | discarded (`>/dev/null 2>&1`) | appended to `$LOG_FILE` — bind and client errors are the only clue when KWin cannot connect |
+| Process matching | `DE_HOST_PATTERNS="^$PREFIX/bin/anland"` (empty `$PREFIX` → matched nothing) | derived from `$ANLAND_BIN`; `DE_HOST_NAMES` is its basename (`libanland.so`) |
+| Downloads / extraction | `$PREFIX/bin/wget`, `$PREFIX/bin/tar` | `http_get` / `http_cat` and `extract_txz`, ported from the XFCE script (it never had them) |
+| `am start` target | `com.anland.termux/.MainActivity` | `com.xiaoian.app/com.anland.termux.MainActivity` |
+
+### Why the daemon binary is called `libanland.so`
+
+`/data/data` is mounted non-executable (W^X), so a binary cannot simply be
+dropped into the app's data directory and run. Android's packager extracts
+files matching `lib*.so` from the APK into the app's native library directory
+with the execute bit set, which is the standard way to ship an executable in an
+APK. This requires `useLegacyPackaging = true` in the **application** module —
+a library module's own packaging options do not affect the final APK.
+
+### The app is the only caller
+
+The scripts are started by the app and nothing else, so anything they need is
+passed in rather than discovered. `ScriptEnv.prefix()` builds the environment
+prefix in one place and every invocation uses it — start (`-s`), stop (`-t`),
+lock (`-k`) and uninstall (`-u`) — so `$ANLAND_BIN` is set even on the paths
+that only tear the session down, where `DE_HOST_PATTERNS` needs it to match the
+running daemon.
+
+`check_anland_daemon` distinguishes the two ways this can fail: `$ANLAND_BIN`
+unset (the app did not pass it) and `$ANLAND_BIN` not executable (the APK lacks
+the binary, or `useLegacyPackaging` is off).
 
 The sections below are the original plan. For XFCE they have been superseded by the table above; they still apply to KDE.
 

@@ -1,229 +1,193 @@
-# 04 — Bootstrap Environment
+# 04 — Built-in Linux Environment
+
+> **Rewritten 2026-09-18.** The original plan bootstrapped a Termux `$PREFIX`
+> under `files/usr`. That approach was abandoned before it was built — see
+> [Why not the Termux bootstrap](#why-not-the-termux-bootstrap). This document
+> describes what the app actually does.
 
 ## Overview
 
-To eliminate the Termux dependency, the Xiaoian app must provide its own Termux-compatible Linux environment. This document describes how to bootstrap a `$PREFIX` directory with all required tools and libraries.
+The app needs a Linux environment of its own so that nothing depends on Termux
+being installed. It gets this from a **Debian tool rootfs** it downloads on first
+run, not from a Termux bootstrap.
 
-## What is the Termux Bootstrap?
+There are two separate Debian trees on the device, and keeping them apart is the
+key to reading the code:
 
-When Termux is first installed, it downloads a **bootstrap tarball** (~30–50 MB) containing a minimal Linux environment cross-compiled for Android:
+| Tree | Path | Purpose | Size |
+|---|---|---|---|
+| **Tool rootfs** | `/data/data/com.xiaoian.app/files/rootfs` | Backs the in-app terminal. Never runs a desktop, and the scripts no longer touch it. | ~150 MB |
+| **Desktop chroot** | `/data/local/xiaoian-x11-xfce/debian`<br>`/data/local/xiaoian-wayland-kde/debian` | The actual XFCE / KDE environment, one per DE. | 4–8 GB |
 
-- `bash`, `coreutils`, `grep`, `sed`, `awk`
-- `apt`, `dpkg` (package management)
-- `openssl`, `ca-certificates` (HTTPS)
-- `libandroid-support`, `libc++` and other shared libraries
-- Directory structure: `bin/`, `lib/`, `etc/`, `var/`, `share/`, `tmp/`
-
-The official bootstrap tarballs are hosted at:
-```
-https://packages.termux.dev/bootstrap/bootstrap-aarch64.zip
-```
-
-## Bootstrap Flow
+Both are extracted from the **same** tarball, downloaded once, and both take
+their downloaded components from the same directory:
 
 ```
-App first launch
-    │
-    ▼
-┌─ BootstrapManager.ensureReady() ─────────────────────────────────┐
-│                                                                    │
-│  1. Check: does $PREFIX/bin/bash exist?                           │
-│     ├─ YES → return (already bootstrapped)                        │
-│     └─ NO  → continue                                             │
-│                                                                    │
-│  2. Show progress UI: "Setting up environment..."                 │
-│                                                                    │
-│  3. Download bootstrap tarball                                     │
-│     ├─ Primary: bundled in APK assets/ (~50 MB, offline-first)    │
-│     └─ Fallback: download from packages.termux.dev                │
-│                                                                    │
-│  4. Extract to /data/data/com.xiaoian.app/files/usr/              │
-│     ├─ Progress: file count / total                                │
-│     └─ Atomic: extract to .tmp/, rename to usr/ on success        │
-│                                                                    │
-│  5. Fix symlinks                                                   │
-│     └─ Bootstrap uses SYMLINKS.txt for hardlink→symlink restore   │
-│                                                                    │
-│  6. Configure APT                                                  │
-│     ├─ Write sources.list (Termux package repos)                  │
-│     └─ Set architecture (aarch64)                                  │
-│                                                                    │
-│  7. Install required packages                                      │
-│     ├─ apt update                                                  │
-│     ├─ apt install wget tar anland termux-x11-nightly pulseaudio  │
-│     └─ Progress: package name + download %                         │
-│                                                                    │
-│  8. Validate                                                       │
-│     ├─ Check: bash, wget, tar, anland, termux-x11 all present    │
-│     └─ Mark bootstrap as complete                                  │
-│                                                                    │
-└────────────────────────────────────────────────────────────────────┘
+/data/data/com.xiaoian.app/files/downloads/
 ```
 
-## Directory Structure
+This used to be `$INFRA_ROOT/install_files`, one copy per desktop. Sharing it
+means the Mesa driver is fetched once instead of twice, and uninstalling one
+desktop no longer discards the other's components. There is no migration from
+the old location: it landed before the first release, so a fresh install is the
+only path onto it.
+
+Because the assets are no longer inside an environment, the dashboard cards show
+a single figure — the infra root's total — instead of splitting it into system
+and installer files.
+
+## Why not the Termux bootstrap
+
+The original plan (bundle or download `bootstrap-aarch64.zip`, extract to
+`files/usr`, `apt install` from Termux repos) does not survive contact with two
+risks already recorded in [09](09-risks-and-mitigations.md):
+
+- **[R10](09-risks-and-mitigations.md#r10-termux-packages-have-a-hardcoded-prefix)** —
+  Termux packages are built with `/data/data/com.termux/files/usr` compiled into
+  their binaries as an absolute path. They do not relocate. A Termux bootstrap
+  unpacked under `com.xiaoian.app` produces binaries that look for their
+  libraries, interpreters and config under a directory belonging to a different
+  app, which is unreadable even when it exists.
+- **[R11](09-risks-and-mitigations.md#r11-wx-exec-restriction)** — with
+  `targetSdk` ≥ 29, Android refuses to exec binaries out of an app's data
+  directory (W^X). Termux is exempt because it targets an older SDK; a new app
+  is not.
+
+A Debian arm64 rootfs has neither problem: it is entered with `chroot`, so its
+own `/usr` is the absolute path its binaries expect, and `chroot` is executed by
+root from `/system/bin`, not from app-owned storage.
+
+Costs accepted in exchange: a larger first download than a Termux bootstrap, and
+the tool rootfs duplicating packages the desktop chroot also has.
+
+## Layout
 
 ```
 /data/data/com.xiaoian.app/
 ├── files/
-│   ├── usr/                          ← $PREFIX (Termux-compatible)
-│   │   ├── bin/
-│   │   │   ├── bash
-│   │   │   ├── wget
-│   │   │   ├── tar
-│   │   │   ├── apt
-│   │   │   ├── dpkg
-│   │   │   ├── anland              ← installed via apt
-│   │   │   ├── termux-x11          ← installed via apt
-│   │   │   └── pulseaudio          ← installed via apt
-│   │   ├── lib/
-│   │   │   ├── libc++_shared.so
-│   │   │   ├── libandroid-support.so
-│   │   │   └── ...
-│   │   ├── etc/
-│   │   │   ├── apt/
-│   │   │   │   └── sources.list
-│   │   │   ├── profile
-│   │   │   └── bash.bashrc
-│   │   ├── var/
-│   │   │   ├── lib/dpkg/           ← package database
-│   │   │   └── cache/apt/          ← downloaded .debs
-│   │   ├── share/
-│   │   └── tmp/                    ← $TMPDIR, runtime sockets
-│   └── home/                       ← $HOME
-│       └── .bashrc
-└── cache/                          ← APK cache (bootstrap tarball)
+│   ├── rootfs/                       ← tool rootfs (Debian Trixie arm64)
+│   │   ├── bin/bash
+│   │   ├── bin/tar
+│   │   ├── usr/bin/wget
+│   │   └── usr/bin/apt-get
+│   ├── downloads/                    ← shared by both desktops, persistent
+│   │   ├── rootfs-arm64.tar.xz       ← source for every chroot
+│   │   ├── mesa-for-android-container_*.tar.gz
+│   │   ├── xwayland_*.deb            ← KDE only
+│   │   └── kwin_anland-*.zip         ← KDE only
+│   └── tmp/                          ← $TMPDIR; bind-mounted as the
+│       └── anland.sock                 desktop chroot's /tmp
+└── cache/                            ← scratch only; Android may wipe it
 ```
 
-## Environment Variables
+### Why the tarball is not in `cacheDir`
 
-```kotlin
-object XiaoianEnvironment {
-    val FILES_DIR = context.filesDir.absolutePath
-    val PREFIX = "$FILES_DIR/usr"
-    val HOME = "$FILES_DIR/home"
-    val TMPDIR = "$PREFIX/tmp"
-    val PATH = "$PREFIX/bin:$PREFIX/bin/applets:/system/bin:/system/xbin"
-    val LD_LIBRARY_PATH = "$PREFIX/lib"
+It used to be. Android evicts `cacheDir` whenever it wants, and the desktop
+scripts read that same file when they install their chroot — so an eviction left
+the script failing with *"Rootfs tarball not found … run the app setup first"*
+and no way to recover, because `BootstrapManager` only re-downloads when the
+**tool** rootfs is missing. It now lives under `filesDir`, which Android does not
+touch, and `XiaoianService` calls `ensureRootfsTarball()` before starting a
+script whose chroot is not installed yet.
 
-    fun asMap(): Map<String, String> = mapOf(
-        "PREFIX" to PREFIX,
-        "HOME" to HOME,
-        "TMPDIR" to TMPDIR,
-        "PATH" to PATH,
-        "LD_LIBRARY_PATH" to LD_LIBRARY_PATH,
-        "XDG_RUNTIME_DIR" to TMPDIR,
-        "ANDROID_ROOT" to "/system",
-        "ANDROID_DATA" to "/data",
-        "TERM" to "xterm-256color",
-        "LANG" to "en_US.UTF-8",
-    )
-}
+## Bootstrap Flow
+
+```
+First start
+    │
+    ▼
+BootstrapManager.isInstalled()            ← su test -f files/rootfs/bin/bash
+    │                                          + files/rootfs/usr/bin/apt-get
+    ├─ true  → nothing to do
+    └─ false ↓
+       1. ensureRootfsTarball()
+          ├─ already ≥ 10 MB in files/downloads/ → done
+          ├─ left over in cacheDir by an older version → move it
+          └─ else: resolve latest image, download to .part, rename on success
+       2. rm -rf files/rootfs, mkdir
+       3. XZInputStream → plain .tar (Android's tar has no xz support)
+       4. su tar -xf … -C files/rootfs
+       5. verify bin/bash and usr/bin/apt-get exist
+       6. configureNetwork(): resolv.conf + aid_inet/aid_net_raw groups
+       7. installPackages(["wget", "tar", "xz-utils"])
+          └─ su chroot files/rootfs apt-get update && apt-get install -y …
 ```
 
-## Shell Script $PREFIX Adaptation
+### Image source
 
-The existing shell scripts hardcode Termux's `$PREFIX`:
+`https://images.linuxcontainers.org/streams/v1/images.json` is scanned for the
+newest `debian/trixie/arm64/default/<date>` entry, which yields:
 
-```bash
-# Current (in both scripts):
-export PREFIX="/data/data/com.termux/files/usr"
+```
+https://images.linuxcontainers.org/images/debian/trixie/arm64/default/<date>/rootfs.tar.xz
 ```
 
-This needs to become dynamic:
+The same URL shape the scripts used before the download moved into the app.
 
-```bash
-# New: detect whether running from Xiaoian app or standalone Termux
-if [ -n "$XIAOIAN_PREFIX" ]; then
-    export PREFIX="$XIAOIAN_PREFIX"
-elif [ -d "/data/data/com.xiaoian.app/files/usr/bin" ]; then
-    export PREFIX="/data/data/com.xiaoian.app/files/usr"
-else
-    export PREFIX="/data/data/com.termux/files/usr"
-fi
+### Networking inside the chroot
+
+Android gates network access on supplementary group membership. `apt` drops to
+the `_apt` user, which is in no Android group, so `configureNetwork()` appends:
+
+```
+aid_inet:x:3003:_apt
+aid_net_raw:x:3004:_apt
 ```
 
-The app passes `XIAOIAN_PREFIX` as an environment variable when invoking scripts:
+`resolv.conf` is a dangling systemd symlink in the LXC image and is replaced with
+a real file (`nameserver 8.8.8.8`).
 
-```kotlin
-shellExecutor.run(
-    command = "su -c 'XIAOIAN_PREFIX=$prefix ./xiaoian-wayland-kde.sh -s --extend'",
-)
-```
+## What the tool rootfs is *not* used for
 
-## APK Size Considerations
+It briefly supplied `wget` and `tar` to the scripts through
+`chroot files/rootfs …`. That could never work: `chroot` resolves every path
+inside the new root, and the scripts pass host paths (`$INSTALLER_DIR`, the
+tarball, the destination chroot). A fresh XFCE install failed on exactly that.
+See [R14](09-risks-and-mitigations.md#r14-tool-rootfs-cannot-see-host-paths).
 
-| Approach | APK Size | First Run | Offline? |
-|---|---|---|---|
-| **Bundle bootstrap in APK** | ~80–100 MB | Fast (extract only) | ✅ Yes |
-| **Download on first run** | ~15 MB | Slow (50 MB download) | ❌ No |
-| **Hybrid** (APK + download extras) | ~20 MB | Medium | Partially |
+The scripts now do their own I/O without a chroot:
 
-### Recommended: Hybrid approach
+| Operation | Mechanism |
+|---|---|
+| Downloads | `http_get` / `http_cat` → `com.xiaoian.app.tools.Fetch` via `app_process` |
+| `.tar.xz` extraction | `extract_txz` → `com.xiaoian.app.tools.Cat` piped into busybox `tar -xJf -` |
 
-1. Bundle a **minimal bootstrap** in APK `assets/` (~15 MB): bash, coreutils, apt, dpkg, wget, tar, ca-certificates
-2. On first run: extract minimal bootstrap, then `apt install` the rest (anland, termux-x11, pulseaudio)
-3. This keeps the APK reasonable (~20 MB) while minimizing first-run downloads
+So the tool rootfs has exactly one consumer left: the in-app terminal, which
+chroots into it. A failed install no longer aborts a desktop session.
 
-## Package Installation
+## `BootstrapManager` API
 
-```kotlin
-class PackageManager(private val prefix: String) {
+| Member | Purpose |
+|---|---|
+| `prefixDir` | `files/rootfs` |
+| `rootfsTarball` | `files/downloads/rootfs-arm64.tar.xz` |
+| `isInstalled()` | `su test -f` on `bin/bash` + `usr/bin/apt-get` — the tree is root-owned, so `File.exists()` cannot see it |
+| `ensureRootfsTarball(onProgress)` | Downloads the tarball if absent; migrates one left in `cacheDir`; `.part` + rename so a broken download is never mistaken for a cached one |
+| `installBootstrap(onProgress)` | Full tool-rootfs install (the flow above) |
+| `installPackages(pkgs, onProgress)` | `apt-get update && apt-get install -y` inside the tool rootfs |
 
-    private val requiredPackages = listOf(
-        "anland",                    // Wayland display daemon
-        "termux-x11-nightly",        // X11 display server
-        "pulseaudio",                // Audio (XFCE variant)
-    )
-
-    suspend fun installMissing(onProgress: (String) -> Unit) {
-        // 1. Update package index
-        onProgress("Updating package index...")
-        shellExec("$prefix/bin/apt update")
-
-        // 2. Check which packages are missing
-        val missing = requiredPackages.filter { !isInstalled(it) }
-
-        // 3. Install missing packages
-        for (pkg in missing) {
-            onProgress("Installing $pkg...")
-            shellExec("$prefix/bin/apt install -y $pkg")
-        }
-    }
-
-    private fun isInstalled(pkg: String): Boolean {
-        return shellExec("$prefix/bin/dpkg -s $pkg").exitCode == 0
-    }
-}
-```
-
-## Bootstrap Updates
-
-The bootstrap only needs updating when:
-- Termux releases a new bootstrap version (rare, ~2–3 times/year)
-- The app itself updates and requires new packages
-
-Update strategy:
-1. Check bootstrap version marker file: `$PREFIX/.xiaoian-bootstrap-version`
-2. If version < app's expected version → download and apply delta, or re-bootstrap
-3. Package updates: `apt update && apt upgrade` (user-triggered, not automatic)
+Everything touching the rootfs goes through `su`, per
+[R2 M2a](09-risks-and-mitigations.md#r2-selinux-context-issues).
 
 ## Error Recovery
 
-| Failure | Recovery |
+| Failure | Current behaviour |
 |---|---|
-| Bootstrap download interrupted | Delete `.tmp/`, retry from scratch |
-| Extraction fails (disk full) | Show disk space warning, clean up partial extraction |
-| APT install fails | Show error log, offer retry button |
-| Corrupt $PREFIX | "Reset environment" button → wipe $PREFIX, re-bootstrap |
+| Tarball download interrupted | `.part` is discarded; the next start re-downloads |
+| Tarball evicted / deleted | Re-downloaded before the script runs |
+| Extraction fails | `installBootstrap` returns false; logged as a warning, the session continues without the terminal |
+| `apt-get` fails | Reported through `onProgress`; the tool rootfs is left in place |
+| Corrupt tool rootfs | `installBootstrap` does `rm -rf` first, so a retry is a clean re-install |
 
-## Estimated Effort
+Not yet implemented: a user-visible "reset environment" action, and any
+versioning of the tool rootfs (it is never refreshed once installed).
 
-| Component | Time |
+## Remaining Work
+
+| Item | Notes |
 |---|---|
-| BootstrapManager (download, extract, validate) | 4–5 days |
-| Environment setup (vars, paths, permissions) | 2–3 days |
-| APT configuration and package installation | 3–4 days |
-| Shell script $PREFIX adaptation | 2–3 days |
-| First-run UI (progress, errors) | 2–3 days |
-| Error recovery and edge cases | 3–4 days |
-| **Total** | **~3–4 weeks** |
+| Install the tool rootfs on demand | Nothing on the desktop path needs it any more, yet a first session still downloads ~150 MB and runs `apt` for it. It belongs behind the terminal screen instead |
+| Surface `files/downloads` in the UI | Now that it sits outside both environments, nothing in the app shows its size or offers to clear it |
+| Free the tarball after both desktops are installed | ~250 MB held indefinitely today |
+| Tool rootfs versioning / refresh | No marker file, no upgrade path |
+| "Reset environment" in Settings | Settings screen is still a stub |

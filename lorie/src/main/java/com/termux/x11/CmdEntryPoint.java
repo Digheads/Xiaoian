@@ -24,6 +24,7 @@ import androidx.annotation.Keep;
 
 import dalvik.annotation.optimization.CriticalNative;
 
+import java.io.File;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.URL;
@@ -170,6 +171,38 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
         return context;
     }
 
+    /**
+     * XIAOIAN: absolute path of the extracted libXlorie.so, or null.
+     *
+     * $XIAOIAN_LIB_DIR is exported by the app (see ScriptEnv.kt) and is the
+     * authoritative answer. Failing that, the extracted libraries sit next to
+     * the APK that $CLASSPATH points at, under lib/<abi>/.
+     */
+    private static String extractedLibPath() {
+        String dir = System.getenv("XIAOIAN_LIB_DIR");
+        if (dir != null && !dir.isEmpty()) {
+            File lib = new File(dir, "libXlorie.so");
+            if (lib.exists())
+                return lib.getAbsolutePath();
+        }
+
+        String cp = System.getenv("CLASSPATH");
+        if (cp == null)
+            return null;
+        for (String entry : cp.split(":")) {
+            File apk = new File(entry);
+            File[] abis = new File(apk.getParentFile(), "lib").listFiles();
+            if (abis == null)
+                continue;
+            for (File abi : abis) {
+                File lib = new File(abi, "libXlorie.so");
+                if (lib.exists())
+                    return lib.getAbsolutePath();
+            }
+        }
+        return null;
+    }
+
     public native boolean start(String[] args);
     public native ParcelFileDescriptor getXConnection();
     public native ParcelFileDescriptor getLogcatOutput();
@@ -189,10 +222,29 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     private static void initEntryPoint() {
         ctx = createContext();
 
-        String path = "lib/" + Build.SUPPORTED_ABIS[0] + "/libXlorie.so";
-        ClassLoader loader = CmdEntryPoint.class.getClassLoader();
-        URL res = loader != null ? loader.getResource(path) : null;
-        String libPath = res != null ? res.getFile().replace("file:", "") : null;
+        // XIAOIAN: prefer the copy the packager extracted to disk. Upstream
+        // reads the library straight out of the APK, which the linker can only
+        // do while native libs are stored uncompressed (extractNativeLibs
+        // =false). This APK also ships executables named lib*.so
+        // (libanland.so, libfdhelper.so) which only become runnable files when
+        // they ARE extracted, so it builds with useLegacyPackaging=true; the
+        // APK entry is then compressed, System.load() throws, and the X server
+        // exits before creating its socket.
+        //
+        // Note ctx is ActivityThread.getSystemContext() -- the *system*
+        // context, so ctx.getApplicationInfo() describes "android", not this
+        // app, and its nativeLibraryDir is useless here.
+        String libPath = extractedLibPath();
+
+        if (libPath == null) {
+            String path = "lib/" + Build.SUPPORTED_ABIS[0] + "/libXlorie.so";
+            ClassLoader loader = CmdEntryPoint.class.getClassLoader();
+            URL res = loader != null ? loader.getResource(path) : null;
+            libPath = res != null ? res.getFile().replace("file:", "") : null;
+        }
+
+        Log.i("CmdEntryPoint", "loading libXlorie.so from " + libPath);
+
         if (libPath != null) {
             try {
                 System.load(libPath);

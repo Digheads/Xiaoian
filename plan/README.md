@@ -9,13 +9,20 @@
 | [01-architecture.md](01-architecture.md) | High-level architecture, component diagram, data flow |
 | [02-phases.md](02-phases.md) | Phased rollout plan with milestones and timelines |
 | [03-terminal-emulator.md](03-terminal-emulator.md) | Terminal emulator integration details |
-| [04-bootstrap-environment.md](04-bootstrap-environment.md) | Termux bootstrap / $PREFIX environment setup |
+| [04-bootstrap-environment.md](04-bootstrap-environment.md) | Built-in Debian environment: tool rootfs, rootfs tarball, package install |
 | [05-display-renderers.md](05-display-renderers.md) | X11 and Wayland/Anland renderer integration |
 | [06-session-management.md](06-session-management.md) | Android Service, notification, lifecycle management |
 | [07-ui-design.md](07-ui-design.md) | UI screens, navigation, user flows |
 | [08-shell-script-changes.md](08-shell-script-changes.md) | Required changes to the existing .sh scripts |
 | [09-risks-and-mitigations.md](09-risks-and-mitigations.md) | Technical risks, licensing, and mitigations |
 | [10-tech-stack.md](10-tech-stack.md) | Technology choices, dependencies, build system |
+
+### Component update guides
+
+| Document | Description |
+|---|---|
+| [update/termux-x11-update.md](update/termux-x11-update.md) | Refreshing the embedded Termux:X11 engine (`lorie` module) |
+| [update/anland-update.md](update/anland-update.md) | Refreshing the embedded Anland engine (`anland` module) |
 
 ## Summary
 
@@ -46,9 +53,12 @@ The rollout order changed: the **X11 renderer and X server were pulled into Phas
 
 | Area | State |
 |---|---|
-| XFCE / X11 | Runs without Termux (script 1.6.0): own `$TMPDIR`, app-side downloader, busybox tar fallback. Only **sound** still needs Termux PulseAudio |
-| KDE / Wayland | Unchanged — still depends on Termux (`anland` daemon, wget, tar) |
+| XFCE / X11 | Runs without Termux. Sound now comes from PulseAudio inside the chroot instead of Termux |
+| KDE / Wayland | No longer depends on Termux either: the `anland` display daemon ships in the APK as `libanland.so` and the script starts it directly (script 2.10.0) |
+| Environment | No Termux bootstrap. A Debian tool rootfs under `files/rootfs` supplies `wget`/`tar`; both desktops extract their chroot from one shared tarball in `files/downloads/` |
 | Scripts | `app/src/main/assets/` = app variants; repo root = standalone Termux **reference** scripts (not modified) |
+
+> **Open blocker:** the scripts reach `wget`/`tar` through `chroot files/rootfs …`, so those tools cannot see host paths — neither the tarball nor the destination chroot. See [04 § Reaching host paths](04-bootstrap-environment.md#open-problem-reaching-host-paths-from-the-tool-rootfs) and [09 R14](09-risks-and-mitigations.md#r14-tool-rootfs-cannot-see-host-paths).
 
 Details: [02-phases.md](02-phases.md#phase-1-smart-wrapper-4-weeks), [05-display-renderers.md](05-display-renderers.md#x11-renderer-termuxx11-fork), [08-shell-script-changes.md](08-shell-script-changes.md#implemented-xfce-script-160), [09-risks-and-mitigations.md](09-risks-and-mitigations.md#r10-termux-packages-have-a-hardcoded-prefix).
 

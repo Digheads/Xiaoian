@@ -57,6 +57,84 @@ dependencies {
 ```
 *Tip: You can safely remove the C/C++ build steps (CMake, NDK) from `lorie/build.gradle`, since we are pulling them in via jniLibs!*
 
+### C. Load `libXlorie.so` from the extracted library directory (CRITICAL)
+
+`CmdEntryPoint.initEntryPoint()` upstream resolves the native library as a
+resource **inside** the APK and `System.load()`s that path:
+
+```java
+String path = "lib/" + Build.SUPPORTED_ABIS[0] + "/libXlorie.so";
+URL res = loader.getResource(path);
+String libPath = res != null ? res.getFile().replace("file:", "") : null;
+```
+
+The linker can only dlopen a library straight out of an APK while native libs
+are stored **uncompressed** — that is why upstream sets
+`useLegacyPackaging false`. Xiaoian cannot: the same APK ships executables named
+`lib*.so` (`libanland.so`, `libfdhelper.so`) which only become runnable files
+when the packager **extracts** them, so `app/build.gradle.kts` sets
+`useLegacyPackaging = true`. The APK entry is then compressed, `System.load()`
+throws, and `initEntryPoint` calls `System.exit(134)` — the X server dies before
+creating its socket and the script reports
+*"X server did not create socket in time"*.
+
+After updating `CmdEntryPoint.java`, reapply the lookup: try the extracted copy
+first, keep the upstream APK read as the fallback.
+
+```java
+String libPath = extractedLibPath();
+
+if (libPath == null) {
+    String path = "lib/" + Build.SUPPORTED_ABIS[0] + "/libXlorie.so";
+    ClassLoader loader = CmdEntryPoint.class.getClassLoader();
+    URL res = loader != null ? loader.getResource(path) : null;
+    libPath = res != null ? res.getFile().replace("file:", "") : null;
+}
+
+Log.i("CmdEntryPoint", "loading libXlorie.so from " + libPath);
+```
+
+with this helper next to it (and `import java.io.File;`):
+
+```java
+private static String extractedLibPath() {
+    String dir = System.getenv("XIAOIAN_LIB_DIR");
+    if (dir != null && !dir.isEmpty()) {
+        File lib = new File(dir, "libXlorie.so");
+        if (lib.exists())
+            return lib.getAbsolutePath();
+    }
+
+    String cp = System.getenv("CLASSPATH");
+    if (cp == null)
+        return null;
+    for (String entry : cp.split(":")) {
+        File apk = new File(entry);
+        File[] abis = new File(apk.getParentFile(), "lib").listFiles();
+        if (abis == null)
+            continue;
+        for (File abi : abis) {
+            File lib = new File(abi, "libXlorie.so");
+            if (lib.exists())
+                return lib.getAbsolutePath();
+        }
+    }
+    return null;
+}
+```
+
+> **Do not** reach for `ctx.getApplicationInfo().nativeLibraryDir` here. `ctx` is
+> `ActivityThread.getSystemContext()` — the *system* context — so it describes
+> the `android` package, not this app, and its `nativeLibraryDir` points at
+> `/system/lib64`. The lookup silently falls through to the APK read and the
+> server dies exactly as before.
+
+`$XIAOIAN_LIB_DIR` is exported by the app (`ScriptEnv.kt`) and passed down by
+`xiaoian-x11-xfce.sh`, which also derives it from `$APK_PATH` if it is missing.
+
+`LorieView` and Anland's `MainActivity` use plain `System.loadLibrary`, which
+works in either packaging mode — this one call site is the only thing that cares.
+
 ## 5. Verification
 - `XiaoianApplication.kt` must continue to extend the `com.termux.x11.LorieApp` class.
 - The `xiaoian-x11-xfce.sh` script relies on the `dalvikvm -cp ... com.termux.x11.CmdEntryPoint` command to launch Xwayland. This interface rarely changes, but if it fails, check if the `CmdEntryPoint` class was moved or renamed.

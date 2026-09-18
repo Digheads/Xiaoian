@@ -49,6 +49,7 @@ object Fetch {
 
             val expected = conn.contentLengthLong
             val progress = ProgressReporter(System.out, expected)
+            out.parentFile?.mkdirs()
             val written = conn.inputStream.use { input ->
                 out.outputStream().use { output -> progress.copy(input, output) }
             }

@@ -19,7 +19,7 @@ import com.xiaoian.app.service.StorageInfo
 import com.xiaoian.app.ui.components.AppLogo
 
 @Composable
-fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel: DashboardViewModel = viewModel()) {
+fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel: DashboardViewModel = viewModel(), onOpenTerminal: () -> Unit = {}) {
     val state by viewModel.sessionState.collectAsState()
     val setup by viewModel.setupProgress.collectAsState()
     val xfceStorage by viewModel.xfceStorage.collectAsState()
@@ -82,6 +82,17 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
                 Text("START DESKTOP")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // A shell in the tool rootfs, which needs no desktop session at
+            // all -- the only thing on the dashboard that works on its own.
+            OutlinedButton(
+                onClick = onOpenTerminal,
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("START TERMINAL")
             }
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -158,7 +169,8 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
             uninstallInProgress = uninstallState.inProgress,
             onUninstall = { showUninstallDialog = "xfce" },
             onOpenDesktop = openDesktop,
-            onStopSession = { viewModel.stopSession() }
+            onStopSession = { viewModel.stopSession() },
+            onOpenTerminal = onOpenTerminal
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -175,7 +187,8 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
             uninstallInProgress = uninstallState.inProgress,
             onUninstall = { showUninstallDialog = "kde" },
             onOpenDesktop = openDesktop,
-            onStopSession = { viewModel.stopSession() }
+            onStopSession = { viewModel.stopSession() },
+            onOpenTerminal = onOpenTerminal
         )
     }
 
@@ -222,7 +235,8 @@ fun InstalledEnvironmentCard(
     uninstallInProgress: Boolean,
     onUninstall: () -> Unit,
     onOpenDesktop: () -> Unit,
-    onStopSession: () -> Unit
+    onStopSession: () -> Unit,
+    onOpenTerminal: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -264,16 +278,7 @@ fun InstalledEnvironmentCard(
             } else if (info?.installed == true) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "System: ${StorageInfo.formatSize(info.rootfsSize)}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    "Installer files: ${StorageInfo.formatSize(info.installerSize)}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Total: ${StorageInfo.formatSize(info.totalSize)}",
+                    StorageInfo.formatSize(info.sizeBytes),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -317,6 +322,9 @@ fun InstalledEnvironmentCard(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = onOpenDesktop, modifier = Modifier.weight(1f)) {
                                 Text("OPEN DESKTOP")
+                            }
+                            Button(onClick = onOpenTerminal, modifier = Modifier.weight(1f)) {
+                                Text("TERMINAL")
                             }
                             Button(
                                 onClick = onStopSession, 

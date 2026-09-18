@@ -101,7 +101,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return@launch
             }
 
-            val result = shellExecutor.run("$scriptPath -u") { line ->
+            val env = com.xiaoian.app.service.ScriptEnv.prefix(getApplication())
+            val result = shellExecutor.run("$env $scriptPath -u") { line ->
                 _uninstallState.value = _uninstallState.value.copy(output = line)
             }
 
@@ -116,31 +117,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private suspend fun queryStorage(infraRoot: String): StorageInfo {
-        // Check if installed
         val existsResult = shellExecutor.run("test -d $infraRoot/debian")
         if (!existsResult.success) {
             return StorageInfo(installed = false)
         }
-
-        val rootfsSize = getDirSize("$infraRoot/debian")
-        val installerSize = getDirSize("$infraRoot/install_files")
-
-        return StorageInfo(
-            rootfsSize = rootfsSize,
-            installerSize = installerSize,
-            installed = true
-        )
+        // The whole infra root: the chroot plus the script, logs and state.
+        // Downloaded assets are shared between both desktops and live in the
+        // app's files/downloads, so they are deliberately not counted here.
+        return StorageInfo(sizeBytes = getDirSize(infraRoot), installed = true)
     }
 
     private suspend fun getDirSize(path: String): Long {
-        val result = shellExecutor.run("du -sb $path 2>/dev/null | head -1")
-        // du -sb outputs: <bytes>\t<path>
-        // We capture it from the last output line
+        // du -sb prints "<bytes>\t<path>"
         var size = 0L
         shellExecutor.run("du -sb $path 2>/dev/null | head -1") { line ->
             val parts = line.trim().split("\t")
             if (parts.isNotEmpty()) {
-                size = parts[0].toLongOrNull() ?: 0L
+                size = parts[0].toLongOrNull() ?: size
             }
         }
         return size

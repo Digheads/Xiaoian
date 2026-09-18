@@ -10,24 +10,27 @@
 # =====================================================================
 # 1. CONFIG
 # =====================================================================
-SCRIPT_VERSION="2.9.0"
-SCRIPT_DATE="2026-09-17"
+SCRIPT_VERSION="2.10.0"
+SCRIPT_DATE="2026-09-18"
 SCRIPT_AUTHOR="Digheads Ferke"
 
-export PREFIX="/data/data/com.termux/files/usr"
-export PATH="$PREFIX/bin:$PREFIX/bin/applets:/system/bin:/system/xbin:$PATH"
-export TMPDIR="$PREFIX/tmp"
+export PATH="/system/bin:/system/xbin:$PATH"
+export TMPDIR="/data/data/com.xiaoian.app/files/tmp"
 export XDG_RUNTIME_DIR="$TMPDIR"
 
-: "${HOME:=$PREFIX/../home}"
+: "${HOME:=/data/local/tmp}"
 export HOME
 
-TERMUX_UID=$(stat -c "%u" /data/data/com.termux/files/usr/bin/bash 2>/dev/null || echo 10422)
 
 INFRA_ROOT="/data/local/xiaoian-wayland-kde"
 LIB_FILE="$INFRA_ROOT/lib.sh"
 LOG_FILE="$INFRA_ROOT/de_debug.log"
-INSTALLER_DIR="$INFRA_ROOT/install_files"
+# Downloaded components (mesa, xwayland, kwin, helper scripts) live in the
+# app's own storage next to the rootfs tarball, not under the infra root:
+# both desktops pull the same assets, so sharing them halves the downloads,
+# and uninstalling one desktop no longer throws away the other's files.
+APP_DATA_DIR="/data/data/com.xiaoian.app"
+INSTALLER_DIR="$APP_DATA_DIR/files/downloads"
 
 # Update checks against GitHub happen at most this often (seconds).
 UPDATE_CHECK_INTERVAL=86400
@@ -36,13 +39,31 @@ ANLAND_REPO="lfdevs/anland-termux"
 MESA_REPO="lfdevs/mesa-for-android-container"
 ANLAND_HELPER_URL="https://raw.githubusercontent.com/${ANLAND_REPO}/main/scripts/startplasma-anland.sh"
 
-ANLAND_APP_PACKAGE="com.anland.termux"
+ANLAND_APP_PACKAGE="com.xiaoian.app"
+
+# The display daemon ships inside the APK as libanland.so: the packager
+# extracts lib*.so into the app's native library directory with execute
+# permission, which /data/data is denied (W^X). The app resolves that path
+# and passes it in as $ANLAND_BIN -- this script is only ever started by the
+# app, so it does not go looking for it.
+
+# Socket the daemon listens on. The path is not ours to choose: the
+# upstream startplasma-anland.sh hard-codes
+#   export ANLAND_SOCKET=/tmp/anland/display_daemon.sock
+# in start_container() before launching KWin, overwriting anything we
+# export, so the daemon has to be where KWin will look. $TMPDIR is
+# bind-mounted onto the chroot's /tmp (section 3), which makes the host
+# path below and that chroot path the same socket. The Android consumer
+# opens the host path; keep MainActivity.DEFAULT_SOCKET_PATH in step.
+ANLAND_SOCKET="$TMPDIR/anland/display_daemon.sock"
 
 # Desktop-specific values consumed by the common library (section 3).
 DE_APP_PACKAGE="$ANLAND_APP_PACKAGE"
 DE_SESSION_PROC="kwin_wayland"
-DE_HOST_NAMES="anland"
-DE_HOST_PATTERNS="^$PREFIX/bin/anland"
+DE_HOST_NAMES=$(basename "${ANLAND_BIN:-libanland.so}")
+# Anchored: the daemon's command line starts with this path, our own
+# starts with "su"/"sh" and merely contains it as an env assignment.
+DE_HOST_PATTERNS="${ANLAND_BIN:+^$ANLAND_BIN}"
 
 # =====================================================================
 # 2. ARGUMENT PARSING
@@ -75,7 +96,7 @@ Short options can be combined:  -sl  is the same as  -s -l
 
 Infrastructure root: /data/local/xiaoian-wayland-kde
 Audio: chroot PipeWire + pipewire-pulse; Anland forwards speaker and mic.
-Anland daemon: external Termux package (not auto-downloaded).
+Anland daemon: libanland.so, shipped inside the Xiaoian APK.
 EOF
 }
 
@@ -131,7 +152,9 @@ done
 
 [ -z "$ACTION" ] && ACTION="start"
 
-mkdir -p "$INFRA_ROOT" 2>/dev/null
+# $TMPDIR has to exist before anything writes there -- http_cat uses it for
+# its scratch file, well before the daemon start would create it.
+mkdir -p "$INFRA_ROOT" "$TMPDIR" 2>/dev/null
 
 # =====================================================================
 # 3. COMMON LIBRARY
@@ -255,12 +278,39 @@ find_chroot_pids() {
     done
 }
 
-# Termux-side helpers of the desktop: exact process names plus
-# anchored cmdline patterns, never a bare word.
+# This shell, and every process that led to it. `pkill -f` matches against
+# full command lines, and the app starts this script as
+#   su -c 'ANLAND_BIN=<path> ... xiaoian-*.sh -s --local'
+# so anything named on our own command line -- $ANLAND_BIN above -- also
+# matches the shell doing the matching. Killing that is killing ourselves.
+self_and_ancestors() {
+    local p="$$" out=""
+    while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+        out="$out $p"
+        p=$(grep -m1 '^PPid:' "/proc/$p/status" 2>/dev/null | tr -dc '0-9')
+    done
+    echo "$out"
+}
+
+# Host-side helpers of the desktop: exact process names plus anchored
+# cmdline patterns, never a bare word. Both guards matter -- the anchor
+# keeps the pattern off our own command line, the ancestor check makes a
+# future unanchored pattern survivable instead of fatal.
 stop_host_procs() {
-    local sig="$1" n p
+    local sig="$1" n p pid skip
+    skip=" $(self_and_ancestors) "
     for n in $DE_HOST_NAMES; do killall -"$sig" "$n" 2>/dev/null; done
-    for p in $DE_HOST_PATTERNS; do pkill -"$sig" -f "$p" 2>/dev/null; done
+    for p in $DE_HOST_PATTERNS; do
+        for pid in $(pgrep -f "$p" 2>/dev/null); do
+            case "$skip" in
+                *" $pid "*)
+                    echo "[!] Refusing to $sig own process $pid (pattern: $p)"
+                    continue
+                    ;;
+            esac
+            kill -"$sig" "$pid" 2>/dev/null
+        done
+    done
 }
 
 wait_chroot_empty() {
@@ -377,6 +427,91 @@ wait_for_session() {
     kill -0 "$wrapper_pid" 2>/dev/null
 }
 
+app_apk_path() {
+    pm path "$ANLAND_APP_PACKAGE" 2>/dev/null | sed -n '1s/^package://p'
+}
+
+# ---- progress protocol ---------------------------------------------------
+# Machine-readable lines for the app, next to the human "[*]" lines:
+#   @@PLAN <id> <title>   (all steps of this run, announced up front)
+#   @@STEP <id>   @@PROGRESS <id> <done bytes> <total bytes|-1>   @@DONE <id>
+# The app's Fetch and Cat tools print @@PROGRESS themselves when
+# XIAOIAN_PROGRESS_ID is set. Identical to the XFCE script.
+step_plan() { echo "@@PLAN $1 $2"; }
+step()      { echo "@@STEP $1"; }
+step_done() { echo "@@DONE $1"; }
+
+# Usage: http_get <timeout s> <url> <output file>
+# Downloads with the app's own HTTPS client, started through app_process.
+# Running the download inside the tool rootfs is not an option: chroot
+# hides the host paths it has to write to.
+http_get() {
+    local t="$1" url="$2" out="$3" pid="$4" apk
+    apk=$(app_apk_path)
+    [ -n "$apk" ] || { echo "[!] ERROR: cannot locate the $ANLAND_APP_PACKAGE APK." >&2; return 1; }
+    CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" timeout "$t" \
+        app_process /system/bin com.xiaoian.app.tools.Fetch "$url" "$out"
+}
+
+# Usage: http_cat <timeout s> <url>  (body on stdout)
+# Goes through a temp file, so a failed try never leaves partial output
+# in the caller's pipe.
+http_cat() {
+    local tmp="$TMPDIR/.http_cat.$$"
+    if http_get "$1" "$2" "$tmp"; then
+        cat "$tmp"
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Prints a tar command that can extract .tar.xz, from the busybox that
+# the root solution ships.
+find_xz_tar() {
+    local b
+    for b in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
+        [ -x "$b" ] || continue
+        "$b" tar --help 2>&1 | grep -q -- '-J' && { echo "$b tar"; return 0; }
+    done
+    return 1
+}
+
+# Usage: extract_txz <tarball> <destination dir> <progress id>
+# The app's Cat tool feeds the tarball into tar, so the side that reads the
+# host path is a process that can actually see it. Cat reports the bytes read
+# on fd 3 (the script's stdout); the compressed size is the known total, so
+# the app gets a real percentage without a second xz pass.
+extract_txz() {
+    local f="$1" dest="$2" pid="$3" tarcmd apk rc
+    tarcmd=$(find_xz_tar) || {
+        echo "[!] ERROR: No tar with xz support found (Magisk/KernelSU/APatch busybox)."
+        return 1
+    }
+    echo "[*] Extractor: $tarcmd"
+    echo "[*] Source:    $f ($(du -h "$f" 2>/dev/null | cut -f1))"
+    echo "[*] Target:    $dest ($(df -h "$dest" 2>/dev/null | tail -1 | awk '{print $4}') free)"
+
+    apk=$(app_apk_path)
+    if [ -z "$apk" ]; then
+        echo "[!] WARNING: APK path unknown; extracting without progress reporting."
+        $tarcmd -xJf "$f" -C "$dest"
+        return
+    fi
+    { CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" \
+        app_process /system/bin com.xiaoian.app.tools.Cat "$f" 2>&3 \
+        | $tarcmd -xJf - -C "$dest"; } 3>&1
+    rc=$?
+    if [ "$rc" != "0" ]; then
+        echo "[!] ERROR: the extraction pipeline exited with status $rc."
+        echo "[!]   tar:  $tarcmd"
+        echo "[!]   into: $dest"
+        df -h "$dest" 2>&1 | sed 's/^/[!]   /'
+    fi
+    return $rc
+}
+
 safe_wipe_rootfs() {
     unmount_all || {
         echo "[!] Refusing to rm -rf: mounts still active under $DEBIAN_ROOTFS."
@@ -393,8 +528,8 @@ safe_wipe_rootfs() {
 # reached (offline / API rate limit). Downloads go to a .part file, so
 # a failed download never destroys the cached copy.
 fetch_asset() {
-    local repo="$1" pattern="$2" friendly="$3" old_glob="$4"
-    local slug stamp cached api json matches url fname target f
+    local repo="$1" pattern="$2" friendly="$3" old_glob="$4" pid="$5"
+    local slug stamp cached api json matches url fname target f api_ok
     slug=$(printf '%s' "$friendly" | tr -c 'A-Za-z0-9' '_')
     stamp="$INSTALLER_DIR/.checked-$slug"
     cached=$(ls -t "$INSTALLER_DIR" 2>/dev/null | grep -E "^${pattern}\$" | head -1)
@@ -405,10 +540,11 @@ fetch_asset() {
     fi
 
     url=""
+    api_ok=0
     for api in "releases/latest" "releases?per_page=20"; do
-        json=$(timeout 20 "$PREFIX/bin/wget" -q -o /dev/null -O - \
-            "https://api.github.com/repos/${repo}/${api}" 2>/dev/null)
+        json=$(http_cat 20 "https://api.github.com/repos/${repo}/${api}" 2>/dev/null)
         [ -n "$json" ] || continue
+        api_ok=1
         matches=$(printf '%s\n' "$json" | tr ',' '\n' \
             | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
             | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' \
@@ -425,7 +561,18 @@ fetch_asset() {
             echo "[!] $friendly: update check failed (offline or rate-limited); using cached $cached"
             return 0
         fi
-        echo "[!] No matching asset for $friendly (pattern: $pattern) and nothing cached."
+        if [ "$api_ok" = "0" ]; then
+            # Nothing came back at all: the lookup failed, the pattern never
+            # got a chance. Telling these two apart is the difference between
+            # "upstream renamed the file" and "the downloader is broken".
+            echo "[!] $friendly: no response from the GitHub API."
+            echo "[!] The downloader writes its scratch file to \$TMPDIR ($TMPDIR);"
+            echo "[!] check that it exists and that the device is online."
+        else
+            echo "[!] No matching asset for $friendly (pattern: $pattern) and nothing cached."
+            echo "[!] The API answered, so the release exists but has no file"
+            echo "[!] matching that pattern -- upstream probably renamed it."
+        fi
         return 1
     fi
 
@@ -436,7 +583,7 @@ fetch_asset() {
     else
         echo "[*] Downloading $friendly: $fname"
         rm -f "$target.part"
-        if ! timeout 900 "$PREFIX/bin/wget" -q -o /dev/null -O "$target.part" "$url" \
+        if ! http_get 900 "$url" "$target.part" "$pid" \
            || [ ! -s "$target.part" ]; then
             rm -f "$target.part"
             if [ -n "$cached" ]; then
@@ -460,6 +607,12 @@ fetch_asset() {
 ensure_installer_dir() {
     mkdir -p "$INSTALLER_DIR" 2>/dev/null
     [ -d "$INSTALLER_DIR" ] || { echo "[!] Failed to create installer directory: $INSTALLER_DIR"; exit 1; }
+    # This is the app's private storage and the app writes the rootfs tarball
+    # here, so the directory has to stay owned by the app uid even though root
+    # is what creates the files in it.
+    _uid=$(stat -c %u "$APP_DATA_DIR" 2>/dev/null)
+    [ -n "$_uid" ] && chown "$_uid:$_uid" "$INSTALLER_DIR" 2>/dev/null
+    unset _uid
 }
 
 SESSION_SCRIPT="$DEBIAN_ROOTFS/start-kde.sh"
@@ -508,57 +661,62 @@ restore_internal_size() {
 }
 
 # =====================================================================
-# 3c. ANLAND DAEMON (TERMUX SIDE)
+# 3c. ANLAND DAEMON (HOST SIDE)
 # =====================================================================
-check_anland_in_termux() {
-    if ! command -v anland >/dev/null 2>&1; then
+check_anland_daemon() {
+    if [ -z "$ANLAND_BIN" ]; then
         echo ""
         echo "[!] ================================================================"
-        echo "[!] Anland daemon NOT found in Termux."
-        echo "[!]"
-        echo "[!] This is a required external dependency. It is NOT downloaded"
-        echo "[!] or installed by this script. You must install it manually."
-        echo "[!]"
-        echo "[!] Download the Termux package from:"
-        echo "[!]   https://github.com/${ANLAND_REPO}/releases"
-        echo "[!]   (look for anland_<version>_aarch64.deb)"
-        echo "[!]"
-        echo "[!] Then install it in Termux:"
-        echo "[!]   cd ~"
-        echo "[!]   pkg install dpkg        # if not already installed"
-        echo "[!]   dpkg -i anland_<version>_aarch64.deb"
-        echo "[!]"
-        echo "[!] After installation, verify with:  which anland"
-        echo "[!] Then re-run this script."
+        echo "[!] ANLAND_BIN is not set."
+        echo "[!] The app passes it in when it starts this script; the script"
+        echo "[!] does not resolve it itself. See ScriptEnv.kt."
         echo "[!] ================================================================"
         return 1
     fi
-    echo "[*] Anland daemon: $(command -v anland)"
+    if [ ! -x "$ANLAND_BIN" ]; then
+        echo ""
+        echo "[!] ================================================================"
+        echo "[!] Anland display daemon not executable:"
+        echo "[!]   $ANLAND_BIN"
+        echo "[!]"
+        echo "[!] Either the APK was built without"
+        echo "[!]   anland/src/main/jniLibs/arm64-v8a/libanland.so"
+        echo "[!] or the app module is missing useLegacyPackaging = true, which"
+        echo "[!] is what gets lib*.so extracted with the execute bit set."
+        echo "[!] ================================================================"
+        return 1
+    fi
+    echo "[*] Anland daemon: $ANLAND_BIN"
     return 0
 }
 
 start_anland_daemon() {
-    echo "[*] Starting Anland display daemon (Termux side)..."
+    echo "[*] Starting Anland display daemon (host side)..."
 
+    _proc=$(basename "$ANLAND_BIN")
     stop_host_procs KILL
     i=0
-    while pidof anland >/dev/null 2>&1 && [ $i -lt 20 ]; do
+    while pidof "$_proc" >/dev/null 2>&1 && [ $i -lt 20 ]; do
         sleep 0.1
         i=$((i+1))
     done
-    rm -f "$TMPDIR/anland/display_daemon.sock" 2>/dev/null
+    rm -f "$ANLAND_SOCKET" 2>/dev/null
 
-    mkdir -p "$TMPDIR/anland"
-    chmod 777 "$TMPDIR/anland"
+    # The daemon creates the socket, but not the directory holding it, and
+    # the chroot reaches it through the same bind mount.
+    mkdir -p "$TMPDIR"
+    chmod 777 "$TMPDIR"
 
-    setsid anland >/dev/null 2>&1 &
+    # Log to the session log: the daemon reports bind and client errors on
+    # stderr, and they are the only clue when KWin cannot connect.
+    setsid "$ANLAND_BIN" --socket "$ANLAND_SOCKET" >> "$LOG_FILE" 2>&1 &
     ANLAND_PID=$!
-    echo "[*] Anland daemon pid: $ANLAND_PID"
+    echo "[*] Anland daemon pid: $ANLAND_PID ($_proc)"
 
-    echo "[*] Waiting for display daemon socket at $TMPDIR/anland/display_daemon.sock..."
+    echo "[*] Waiting for display daemon socket at $ANLAND_SOCKET..."
     i=0
     while [ $i -lt 150 ]; do
-        [ -S "$TMPDIR/anland/display_daemon.sock" ] && break
+        [ -S "$ANLAND_SOCKET" ] && break
         if ! kill -0 "$ANLAND_PID" 2>/dev/null; then
             echo "[!] Anland daemon exited prematurely."
             break
@@ -567,14 +725,15 @@ start_anland_daemon() {
         sleep 0.2
     done
 
-    if [ -S "$TMPDIR/anland/display_daemon.sock" ]; then
+    if [ -S "$ANLAND_SOCKET" ]; then
+        # The consumer runs as the app uid, the daemon as root.
+        chmod 666 "$ANLAND_SOCKET" 2>/dev/null
         echo "[*] Anland display daemon socket is up (took $((i/5))s)."
         return 0
     else
         echo "[!] WARNING: Anland socket not found after 30s."
-        echo "[!]   logcat -d | grep -i anland"
-        echo "[!]   ls -la $TMPDIR/anland/"
-        echo "[!]   pm list packages | grep anland"
+        echo "[!]   tail -50 $LOG_FILE"
+        echo "[!]   ls -la $TMPDIR/"
         return 1
     fi
 }
@@ -636,7 +795,7 @@ do_version() {
     echo "Installer: $INSTALLER_DIR"
     echo "Audio:   chroot PipeWire + WirePlumber + pipewire-pulse"
     echo "         (Anland forwards speaker and mic; logs: \$TMPDIR/anland/*.log)"
-    echo "Anland:  external Termux package (not auto-downloaded)"
+    echo "Anland:  $ANLAND_BIN (shipped in the APK)"
     echo "Screen:  locker disabled (no root password in chroot)"
     echo "Logout:  watchdog terminates session when plasmashell is gone"
     echo "Updates: GitHub checked at most every $((UPDATE_CHECK_INTERVAL / 3600))h; works offline with cache"
@@ -757,7 +916,7 @@ do_stop() {
 
     stop_session_wrapper
     teardown_session
-    rm -f "$SESSION_WRAPPER" "$TMPDIR/anland/display_daemon.sock"
+    rm -f "$SESSION_WRAPPER" "$ANLAND_SOCKET"
 
     echo ""
     echo "[*] Xiaoian stopped."
@@ -822,9 +981,11 @@ do_uninstall() {
     else
         echo ""
         echo "[*] Xiaoian fully uninstalled."
-        echo "[*] $INFRA_ROOT has been removed (including installer files)."
-        echo "[*] NOTE: the Anland daemon remains installed in Termux."
-        echo "[*]       Remove it manually with: dpkg -r anland"
+        echo "[*] $INFRA_ROOT has been removed."
+        echo "[*] Downloaded components in $INSTALLER_DIR were kept;"
+        echo "[*] they are shared with the other desktop."
+        echo "[*] NOTE: the Anland daemon lives inside the Xiaoian APK;"
+        echo "[*]       uninstalling the app removes it."
     fi
     echo "[*] You can now re-run '$0 -s' for a clean install."
 }
@@ -841,6 +1002,16 @@ do_start() {
 
     rm -f "$MODE_FILE"
 
+    step_plan settings   "Checking display settings"
+    step_plan components "Upstream components"
+    if [ ! -f "$DEBIAN_ROOTFS/bin/bash" ]; then
+        step_plan rootfs-extract "Extracting Debian rootfs"
+    fi
+    step_plan packages "Debian packages"
+    step_plan anland   "Display daemon"
+    step_plan session  "KDE Plasma desktop"
+
+    step settings
     if [ "$MODE" != "local" ]; then
         if [ "$MODE" = "mirror" ]; then
             WANT_FREEFORM=1; WANT_DESKTOP=0; WANT_NONRESIZE=0; WANT_RESIZE=0
@@ -902,20 +1073,23 @@ do_start() {
         echo "[*] External display detected: displayId=$EXTERNAL_DISPLAY_ID"
     fi
 
+    step_done settings
+
     ensure_installer_dir
     echo ""
     echo "[*] Root:      $INFRA_ROOT"
     echo "[*] Installer: $INSTALLER_DIR"
 
-    check_anland_in_termux || exit 1
+    check_anland_daemon || exit 1
 
+    step components
     echo "[*] Checking upstream components..."
     fetch_asset "$ANLAND_REPO" "xwayland_24\\.1\\.6-91_arm64\\.deb" \
-        "XWayland" "xwayland_*.deb" || exit 1
+        "XWayland" "xwayland_*.deb" components || exit 1
     fetch_asset "$ANLAND_REPO" "kwin_anland-[^/]*debian[^/]*\\.zip" \
-        "KWin Anland backend" "kwin_anland-*.zip" || exit 1
+        "KWin Anland backend" "kwin_anland-*.zip" components || exit 1
     fetch_asset "$MESA_REPO" "mesa-for-android-container_[^/]*_debian_trixie_arm64\\.tar\\.gz" \
-        "Freedreno driver" "mesa-for-android-container*.tar.gz" || exit 1
+        "Freedreno driver" "mesa-for-android-container*.tar.gz" components || exit 1
 
     # The helper is refreshed together with the other components, so it
     # never drifts away from the KWin backend it belongs to.
@@ -926,7 +1100,7 @@ do_start() {
     else
         echo "[*] Checking startplasma-anland.sh..."
         rm -f "$ANLAND_HELPER_LOCAL.part"
-        if timeout 60 "$PREFIX/bin/wget" -q -o /dev/null -O "$ANLAND_HELPER_LOCAL.part" "$ANLAND_HELPER_URL" \
+        if http_get 60 "$ANLAND_HELPER_URL" "$ANLAND_HELPER_LOCAL.part" components \
            && [ -s "$ANLAND_HELPER_LOCAL.part" ]; then
             if [ -s "$ANLAND_HELPER_LOCAL" ] && \
                [ "$(md5sum < "$ANLAND_HELPER_LOCAL.part")" = "$(md5sum < "$ANLAND_HELPER_LOCAL")" ]; then
@@ -964,6 +1138,7 @@ do_start() {
     echo "      $(basename "$KWIN_ZIP")     [chroot package]"
     echo "      $(basename "$FREEDRENO_TAR") [chroot package]"
     echo "      $(basename "$ANLAND_HELPER_LOCAL")"
+    step_done components
 
     if [ -d "$DEBIAN_ROOTFS/data/data/com.termux" ]; then
         echo "[*] Removing leftover Termux payload from chroot (old bug)..."
@@ -977,37 +1152,25 @@ do_start() {
         safe_wipe_rootfs || exit 1
         mkdir -p "$DEBIAN_ROOTFS"
 
-        INDEX_URL="https://images.linuxcontainers.org/streams/v1/images.json"
-        echo "[*] Fetching latest rootfs date from LXC JSON index..."
-        LATEST_DATE=$(timeout 30 $PREFIX/bin/wget -q -o /dev/null -O - "$INDEX_URL" \
-            | tr ',' '\n' \
-            | grep -o 'debian/trixie/arm64/default/[0-9]\{8\}_[0-9]\{2\}:[0-9]\{2\}' \
-            | sort | tail -1 | sed 's#.*/##')
-
-        if [ -z "$LATEST_DATE" ]; then
-            echo "[!] ERROR: Failed to fetch the latest rootfs date from LXC server."
+        # The app downloads this and tells us where it put it. Hard-coding the
+        # path in two places is how they end up disagreeing.
+        ROOTFS_TARBALL="${XIAOIAN_ROOTFS_TARBALL:-$INSTALLER_DIR/rootfs-arm64.tar.xz}"
+        
+        if [ ! -s "$ROOTFS_TARBALL" ]; then
+            echo "[!] ERROR: Rootfs tarball not found at"
+            echo "[!]   $ROOTFS_TARBALL"
+            echo "[!] The app downloads it before starting a session."
+            echo "[!] Contents of $INSTALLER_DIR:"
+            ls -la "$INSTALLER_DIR" 2>&1 | sed 's/^/[!]   /'
             exit 1
         fi
 
-        DOWNLOAD_URL="https://images.linuxcontainers.org/images/debian/trixie/arm64/default/$LATEST_DATE/rootfs.tar.xz"
-        ROOTFS_TARBALL="$INSTALLER_DIR/debian-trixie-rootfs-$LATEST_DATE.tar.xz"
-
-        if [ -s "$ROOTFS_TARBALL" ]; then
-            echo "[*] Rootfs tarball already cached: $(basename "$ROOTFS_TARBALL")"
-        else
-            echo "[*] Downloading archive: $DOWNLOAD_URL"
-            timeout 1800 "$PREFIX/bin/wget" -q -o /dev/null -O "$ROOTFS_TARBALL" "$DOWNLOAD_URL" \
-                || { echo "[!] ERROR: Download failed!"; exit 1; }
-        fi
-
-        for old in "$INSTALLER_DIR"/debian-trixie-rootfs-*.tar.xz; do
-            [ -f "$old" ] && [ "$old" != "$ROOTFS_TARBALL" ] && rm -f "$old"
-        done
-
+        step rootfs-extract
         echo "[*] Extracting rootfs (this will take a few minutes)..."
-        $PREFIX/bin/tar -xJf "$ROOTFS_TARBALL" -C "$DEBIAN_ROOTFS" \
+        extract_txz "$ROOTFS_TARBALL" "$DEBIAN_ROOTFS" rootfs-extract \
             || { echo "[!] ERROR: Extraction failed!"; exit 1; }
         echo "[*] Debian rootfs installation successfully completed!"
+        step_done rootfs-extract
     fi
 
     echo "[*] Removing previous session locks..."
@@ -1083,6 +1246,15 @@ ASOUND
 
     rm -f $DEBIAN_ROOTFS/etc/resolv.conf
     echo 'nameserver 1.1.1.1' > $DEBIAN_ROOTFS/etc/resolv.conf
+
+    # apt drops to the _apt user to download, and Android only lets
+    # processes in the inet group (gid 3003) open a socket. Without these
+    # entries every apt-get inside the chroot fails to reach the network,
+    # which then shows up much later as a missing package.
+    for _g in "aid_inet:x:3003:_apt" "aid_net_raw:x:3004:_apt"; do
+        grep -q "^${_g%%:*}:" $DEBIAN_ROOTFS/etc/group 2>/dev/null \
+            || echo "$_g" >> $DEBIAN_ROOTFS/etc/group
+    done
 
     echo "[*] Verifying and mounting necessary file systems..."
     mount_all
@@ -1163,6 +1335,9 @@ export DEBIAN_FRONTEND=noninteractive
 export DEBCONF_NONINTERACTIVE_SEEN=true
 export APT_LISTCHANGES_FRONTEND=none
 
+# APT::Status-Fd=1 adds machine-readable "dlstatus:" / "pmstatus:"
+# lines to stdout, which the app turns into the progress bar.
+
 # plasma-workspace-wayland does NOT exist in trixie; Wayland support is
 # inside plasma-workspace. XWayland runtime deps listed so apt can
 # resolve the Anland XWayland .deb cleanly. elogind is intentionally
@@ -1220,14 +1395,15 @@ if [ -n "$MISSING_PKGS" ]; then
     echo "[*] Installing missing dependencies: $MISSING_PKGS"
     STAMP=/var/lib/apt/periodic/update-success-stamp
     if [ ! -f "$STAMP" ]; then
-        apt-get update
+        apt-get -o APT::Status-Fd=1 update
     else
         AGE=$(( $(date +%s) - $(stat -c %Y "$STAMP") ))
         if [ "$AGE" -gt 86400 ]; then
-            apt-get update
+            apt-get -o APT::Status-Fd=1 update
         fi
     fi
     if ! apt-get install -y --no-install-recommends \
+            -o APT::Status-Fd=1 \
             -o Dpkg::Options::="--force-confold" \
             -o Dpkg::Options::="--force-confdef" \
             $MISSING_PKGS; then
@@ -1381,6 +1557,8 @@ SETUP
     # Fast pre-check (${db:Status-Abbrev} via absolute dpkg-query)
     # pipewire, wireplumber and pipewire-pulse are critical for audio.
     # -----------------------------------------------------------------
+    step packages
+    echo "[*] Checking Debian dependencies and GPU drivers..."
     CHROOT_SETUP_NEEDED=0
 
     for _p in kwin-common kwin-data kwin-wayland kwin-x11 libkwin6 \
@@ -1426,11 +1604,14 @@ SETUP
     else
         echo "[*] All critical packages present and components unchanged; skipping setup."
     fi
+    step_done packages
 
+    step anland
     start_anland_daemon || {
         echo "[!] WARNING: Anland daemon did not come up cleanly."
         echo "[!] Continuing anyway; KWin will likely fail to connect."
     }
+    step_done anland
 
     # Audio runs entirely inside the chroot (started by the Anland
     # helper); stale Termux-side sockets from <= 2.7.0 are removed.
@@ -1445,12 +1626,12 @@ SETUP
 
     if [ "$MODE" = "extend" ]; then
         echo "[*] Launching Anland app on external display (displayId=$EXTERNAL_DISPLAY_ID)..."
-        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/.MainActivity \
+        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/com.anland.termux.MainActivity \
             --display "$EXTERNAL_DISPLAY_ID" \
             --windowingMode 1 -f 0x18000000
     else
         echo "[*] Launching Anland Android frontend application..."
-        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/.MainActivity
+        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/com.anland.termux.MainActivity
     fi
     # Wait for the app process instead of a fixed 3s, then give its
     # activity a moment to attach to the display daemon.
@@ -1535,7 +1716,7 @@ cleanup() {
     RC=\${1:-\$?}
     trap - EXIT TERM INT HUP
     teardown_session >> "\$LOG_FILE" 2>&1
-    rm -f "\$TMPDIR/anland/display_daemon.sock" 2>/dev/null
+    rm -f "$ANLAND_SOCKET" 2>/dev/null
     exit "\$RC"
 }
 
@@ -1595,6 +1776,7 @@ WRAPPER
     chmod 0644 "$MODE_FILE"
 
     echo ""
+    step session
     echo "[*] Booting KDE Plasma 6 (Wayland) on Anland backend..."
     echo "[*] Detailed logs: $LOG_FILE (previous run: $LOG_FILE.1)"
 
@@ -1607,10 +1789,11 @@ WRAPPER
     write_state "$WRAPPER_PID"
 
     if wait_for_session "$WRAPPER_PID"; then
+        step_done session
         echo ""
         echo "[*] Xiaoian is running ($MODE mode)."
         echo "[*] Session PID: $WRAPPER_PID (saved to $STATE_FILE)"
-        echo "[*] You can safely close Termux now."
+        echo "[*] The session keeps running in the background."
         echo ""
 
         if [ "$MODE" = "local" ]; then

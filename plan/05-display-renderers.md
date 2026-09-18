@@ -79,7 +79,7 @@ The plan below assumed a separate `termux-x11` server in `$PREFIX` and a custom 
 |---|---|
 | `termux-x11` server process from Termux `$PREFIX/bin` | X server started from the APK: `CLASSPATH=<apk> app_process /system/bin com.termux.x11.CmdEntryPoint :0` (as root, from the script) |
 | Fork only `LorieView` + renderer into a new `X11SurfaceView` | Whole Termux:X11 frontend embedded as the `lorie` library module (`com.termux.x11.MainActivity`, prefs, extra keys) |
-| Build native code with NDK/CMake | Prebuilt `.so` files copied from the matching Termux:X11 APK into `lorie/src/main/jniLibs/` — see [update/termux-x11-update.md](../update/termux-x11-update.md) |
+| Build native code with NDK/CMake | Prebuilt `.so` files copied from the matching Termux:X11 APK into `lorie/src/main/jniLibs/` — see [update/termux-x11-update.md](update/termux-x11-update.md) |
 | `DisplayActivity` with `display_mode` extra | Script launches `com.xiaoian.app/com.termux.x11.MainActivity` directly |
 
 Socket location: the X server takes `TMPDIR` as the container's `/tmp` and derives the container root from its parent (X11 font path). The script passes `TMPDIR=<rootfs>/tmp`, which is the same directory as its own bind-mounted `$INFRA_ROOT/tmp`.

@@ -7,7 +7,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.*
 import com.xiaoian.app.ui.screens.DashboardScreen
+import com.xiaoian.app.ui.screens.TerminalScreen
 import com.xiaoian.app.ui.theme.XiaoianTheme
 
 class MainActivity : ComponentActivity() {
@@ -15,9 +17,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
+            var currentScreen by remember { mutableStateOf("dashboard") }
+
             XiaoianTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    DashboardScreen(innerPadding = innerPadding)
+                    if (currentScreen == "dashboard") {
+                        DashboardScreen(innerPadding = innerPadding, onOpenTerminal = { currentScreen = "terminal" })
+                    } else {
+                        TerminalScreen(onBack = { currentScreen = "dashboard" })
+                    }
                 }
             }
         }

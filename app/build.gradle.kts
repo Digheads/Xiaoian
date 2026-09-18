@@ -44,6 +44,19 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // libanland.so and libfdhelper.so are executables named lib*.so so that
+    // the packager extracts them into the app's native library directory with
+    // execute permission -- /data/data itself is non-executable (W^X). That
+    // extraction only happens with legacy packaging; with the AGP 8 default
+    // (extractNativeLibs=false) nativeLibraryDir points inside the APK and
+    // neither binary can be exec'd. The library modules' own packaging
+    // options do not affect the final APK, so it has to be set here.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
@@ -52,6 +65,7 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.material3:material3")
     implementation(project(":lorie"))
+    implementation(project(":anland"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material:material-icons-extended")
@@ -74,4 +88,8 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.13.1")
+    
+    // Compression
+    implementation("org.apache.commons:commons-compress:1.24.0")
+    implementation("org.tukaani:xz:1.9")
 }

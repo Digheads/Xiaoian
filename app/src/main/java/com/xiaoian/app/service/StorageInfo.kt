@@ -1,12 +1,17 @@
 package com.xiaoian.app.service
 
+/**
+ * How much space one environment occupies.
+ *
+ * A single figure: the downloaded installer assets no longer live under the
+ * environment's infra root (they are shared between the two desktops, in the
+ * app's own `files/downloads`), so there is nothing left to break the number
+ * down into.
+ */
 data class StorageInfo(
-    val rootfsSize: Long = 0L,
-    val installerSize: Long = 0L,
+    val sizeBytes: Long = 0L,
     val installed: Boolean = false
 ) {
-    val totalSize: Long get() = rootfsSize + installerSize
-
     companion object {
         fun formatSize(bytes: Long): String {
             if (bytes <= 0) return "0 B"

@@ -17,6 +17,8 @@
 | R11 | targetSdk ≥ 29 blocks exec of binaries from the app's data dir (W^X) | High | High (Phase 3) | 🔴 |
 | R12 | No sound without Termux (XFCE) | Certain | Medium | 🟡 |
 | R13 | App downloader / busybox tar not available on a device | Low | High | 🟡 |
+| R14 | Tool rootfs `chroot` cannot see host paths | ~~Certain~~ | ~~Critical~~ | ✅ fixed |
+| R15 | Termux:X11 and Anland need opposite APK native-lib packaging | Certain | High | 🟡 managed |
 
 ---
 
@@ -231,4 +233,82 @@ This is very reasonable. Termux itself is ~100+ MB after bootstrap.
 
 **Risk:** The XFCE script now depends on (a) the app's `com.xiaoian.app.tools.Fetch` running under `app_process` with working TLS, and (b) a busybox with xz-capable `tar` from Magisk / KernelSU / APatch for the first rootfs extraction. Neither has been tested on a device yet.
 
-**Mitigations:** Termux wget/tar remain as fallbacks when Termux is installed. If busybox `tar -J` is missing on some root solution, the next step is to extract `.tar.xz` in the app (xz + tar Java library, preserving modes, owners and symlinks).
+**Mitigations:** ~~Termux wget/tar remain as fallbacks when Termux is installed.~~ Termux is no longer part of the design, so those fallbacks are gone (the `find_xz_tar` busybox path and `http_get` are now uncalled). The app already extracts `.tar.xz` for its own tool rootfs (xz in Java, then `tar` as root); doing the same for the desktop chroot would resolve this together with [R14](#r14-tool-rootfs-cannot-see-host-paths).
+
+---
+
+## R14: Tool Rootfs Cannot See Host Paths — FIXED
+
+**Status: resolved (2026-09-18).** Confirmed in the field first: an XFCE start
+failed with
+
+```
+/data/local/xiaoian-x11-xfce/install_files/mesa-for-android-container_…tar.gz.part:
+No such file or directory
+```
+
+**What it was:** both scripts obtained `wget` and `tar` from the app's Debian
+tool rootfs:
+
+```bash
+TOOL_WGET="chroot /data/data/com.xiaoian.app/files/rootfs /usr/bin/wget"
+TOOL_TAR="chroot /data/data/com.xiaoian.app/files/rootfs /bin/tar"
+```
+
+`chroot` replaces the root directory before exec'ing the tool, so every path
+handed to it resolved **inside** `files/rootfs`. `$INSTALLER_DIR`, the rootfs
+tarball and the destination chroot all live outside it, so writes failed with
+`No such file or directory`. Only `-O -` (body to stdout) happened to work,
+which is why the GitHub API lookup succeeded and the asset download did not.
+
+**Fix applied:** the tool rootfs was taken off this path entirely.
+
+| Operation | Now |
+|---|---|
+| GitHub API lookup | `http_cat` → the app's `com.xiaoian.app.tools.Fetch` via `app_process` |
+| Asset / helper download | `http_get` → same, writing host paths directly |
+| Rootfs `.tar.xz` extraction | `extract_txz` → the app's `Cat` streams the tarball into busybox `tar -xJf -` |
+
+None of these enters a chroot, so host paths resolve normally. `http_get`,
+`http_cat`, `find_xz_tar` and `extract_txz` already existed in the XFCE script
+and had merely been left uncalled; they were restored there and ported to the
+KDE script, which never had them.
+
+`TOOL_WGET` / `TOOL_TAR` are gone from both scripts, and the tool rootfs is now
+used only by the in-app terminal — so a failure to install it no longer aborts a
+desktop session (see [XiaoianService](../app/src/main/java/com/xiaoian/app/service/XiaoianService.kt)).
+
+**Remaining dependency:** `extract_txz` needs a busybox with `tar -J` from
+Magisk, KernelSU or APatch — tracked as [R13](#r13-host-tool-availability-xfce).
+
+---
+
+## R15: Conflicting Native Library Packaging
+
+**Risk:** the two embedded upstream projects need opposite values of the same
+APK-wide setting.
+
+| Component | Needs | Why |
+|---|---|---|
+| `libXlorie.so` (Termux:X11) | `extractNativeLibs=false` | `CmdEntryPoint.initEntryPoint()` dlopens it as a resource **inside** the APK, which the linker allows only for uncompressed entries. Upstream sets `useLegacyPackaging false` for this. |
+| `libanland.so`, `libfdhelper.so` (Anland) | `extractNativeLibs=true` | They are executables, not libraries. Only extraction turns them into real files with the execute bit; `/data/data` is non-executable (W^X). Anland's own module sets `useLegacyPackaging = true`. |
+
+A library module's packaging options do not affect the final APK, so the two
+upstream settings silently cancel out and the application module decides for
+everything.
+
+**How it showed up:** turning on `useLegacyPackaging = true` (needed to make the
+Anland daemon runnable) made XFCE fail with *"X server did not create socket in
+time"*. `System.load()` on the now-compressed APK entry threw, and
+`initEntryPoint` answered with `System.exit(134)` before the server ever ran.
+
+**Resolution:** keep `useLegacyPackaging = true` and patch the single call site
+that assumed otherwise — `CmdEntryPoint` now prefers
+`nativeLibraryDir/libXlorie.so` and keeps the APK-resource lookup as a fallback,
+so it works under either setting. See
+[update/termux-x11-update.md § 4C](update/termux-x11-update.md), which must be
+reapplied whenever `CmdEntryPoint.java` is refreshed from upstream.
+
+**Watch for:** any future embedded component that dlopens out of the APK. The
+rule for this project is *extracted libraries, patched loaders* — not the other
+way round, because executables have no alternative.

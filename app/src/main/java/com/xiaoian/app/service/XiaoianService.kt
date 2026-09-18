@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -17,7 +18,6 @@ import com.xiaoian.app.shell.ScriptMessage
 import com.xiaoian.app.shell.ScriptOutputParser
 import com.xiaoian.app.shell.ShellExecutor
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -25,6 +25,7 @@ import java.io.File
 class XiaoianService : LifecycleService() {
 
     companion object {
+        private const val TAG = "XiaoianService"
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "xiaoian_session"
 
@@ -92,29 +93,83 @@ class XiaoianService : LifecycleService() {
                 }
                 
                 // Move to INFRA_ROOT and make executable using root
-                shellExecutor.run("mkdir -p $infraRoot")
-                shellExecutor.run("cp ${scriptFile.absolutePath} $scriptPath")
-                shellExecutor.run("chmod +x $scriptPath")
+                shellExecutor.run("su -c 'mkdir -p $infraRoot && cp ${scriptFile.absolutePath} $scriptPath && chmod +x $scriptPath'")
                 
+                // The scripts write their downloaded assets here too, as root.
+                // The app has to create it first so it stays owned by the app
+                // uid -- otherwise the tarball download later cannot write.
+                bootstrapManagerDownloadsDir()
+
                 setupTracker.reset()
                 sessionManager.updateSetup(setupTracker.progress)
                 lastProgressNotification = 0L
-                val result = shellExecutor.run(
-                    command = "$scriptPath -s --$mode"
-                ) { line ->
+
+                // The tool rootfs is no longer on the desktop's critical path:
+                // the scripts download through the app's own Fetch and extract
+                // with busybox, so nothing they do enters this chroot. Only the
+                // in-app terminal uses it, so a failure here must not take the
+                // desktop down with it.
+                val bootstrapManager = BootstrapManager(this@XiaoianService)
+                if (!bootstrapManager.isInstalled()) {
+                    setupTracker.onMessage(ScriptMessage.StepStarted("Downloading bootstrap"), SystemClock.elapsedRealtime())
+                    val success = bootstrapManager.installBootstrap { msg, progress ->
+                        updateNotification("Bootstrap: $msg")
+                        setupTracker.onMessage(ScriptMessage.AptProgress(progress * 100f, msg), SystemClock.elapsedRealtime())
+                        sessionManager.updateSetup(setupTracker.progress)
+                    }
+                    if (success) {
+                        val packages = listOf("wget", "tar", "xz-utils")
+                        bootstrapManager.installPackages(packages) { msg, progress ->
+                            updateNotification("Package: $msg")
+                            setupTracker.onMessage(ScriptMessage.AptProgress(progress * 100f, msg), SystemClock.elapsedRealtime())
+                            sessionManager.updateSetup(setupTracker.progress)
+                        }
+                    }
+                    if (!bootstrapManager.isInstalled()) {
+                        Log.w(TAG, "Tool rootfs install failed; the in-app terminal will not work, continuing with the session")
+                    }
+                    setupTracker.onMessage(ScriptMessage.StepDone("Downloading bootstrap"), SystemClock.elapsedRealtime())
+                }
+                lastProgressNotification = 0L
+
+                // The script extracts the desktop chroot from the same tarball
+                // the bootstrap uses, so it has to be on disk before the script
+                // goes looking for it.
+                if (!isDesktopInstalled(infraRoot)) {
+                    val tarballOk = bootstrapManager.ensureRootfsTarball { msg, progress ->
+                        updateNotification("Rootfs: $msg")
+                        setupTracker.onMessage(ScriptMessage.AptProgress(progress * 100f, msg), SystemClock.elapsedRealtime())
+                        sessionManager.updateSetup(setupTracker.progress)
+                    }
+                    if (!tarballOk) {
+                        throw Exception("Failed to download the Debian rootfs tarball. Check logcat for details.")
+                    }
+                }
+                lastProgressNotification = 0L
+
+                // The script starts and supervises the display daemon itself --
+                // it already has the socket-wait and teardown logic.
+                val command = "su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -s --$mode'"
+                val result = shellExecutor.run(command = command) { line ->
                     onScriptMessage(scriptParser.parse(line))
                 }
 
                 if (result.success) {
                     sessionManager.updateState(SessionState.Running(mode, de, false))
                     updateNotification("Session running")
-                    audioPlayer = AudioPlayer()
-                    audioPlayerJob = lifecycleScope.launch {
-                        audioPlayer?.start()
+                    if (de != "kde") {
+                        audioPlayer = AudioPlayer()
+                        audioPlayerJob = lifecycleScope.launch {
+                            audioPlayer?.start()
+                        }
                     }
                     startSessionWatchdog()
                 } else {
-                    val errMsg = result.error.ifEmpty { "Failed to start session (exit code non-zero)" }
+                    // stderr is frequently useless on its own ("Terminated"),
+                    // so name the step that was running when it died.
+                    val step = setupTracker.progress.current?.title
+                    val detail = result.error.ifEmpty { "the script exited with a non-zero status" }
+                    val errMsg = if (step != null) "Failed during \"$step\": $detail" else detail
                     sessionManager.updateState(SessionState.Error(errMsg))
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 }
@@ -124,6 +179,16 @@ class XiaoianService : LifecycleService() {
             }
         }
     }
+
+    /** Creates `files/downloads` under this app's uid before root touches it. */
+    private fun bootstrapManagerDownloadsDir() {
+        runCatching { BootstrapManager(this).rootfsTarball.parentFile?.mkdirs() }
+            .onFailure { Log.w(TAG, "Could not create the downloads directory", it) }
+    }
+
+    /** True once the DE's chroot has been extracted under [infraRoot]. */
+    private suspend fun isDesktopInstalled(infraRoot: String): Boolean =
+        shellExecutor.run("test -x $infraRoot/debian/bin/bash").success
 
     /** Called on the shell reader thread for every line of the start script. */
     private fun onScriptMessage(msg: ScriptMessage) {
@@ -151,13 +216,10 @@ class XiaoianService : LifecycleService() {
             val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
             val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
             val scriptPath = "$infraRoot/$scriptName"
-            shellExecutor.run("$scriptPath -t")
-            
-            // Close the X11 window if it is open
-            sendBroadcast(Intent("com.termux.x11.ACTION_STOP").apply {
-                setPackage(packageName)
-            })
-            
+            shellExecutor.run("su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -t'")
+
+            closeFrontend()
+
             sessionManager.updateState(SessionState.Idle)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -169,7 +231,7 @@ class XiaoianService : LifecycleService() {
             val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
             val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
             val scriptPath = "$infraRoot/$scriptName"
-            shellExecutor.run("$scriptPath -k")
+            shellExecutor.run("su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -k'")
             sessionManager.updateState(SessionState.Running(currentMode, currentDE, true))
             updateNotification("Session running (Phone Locked)")
         }
@@ -185,6 +247,29 @@ class XiaoianService : LifecycleService() {
         // Launch TerminalActivity
     }
 
+    /**
+     * Closes whichever desktop frontend is on screen.
+     *
+     * Both live in this process: Termux:X11 listens for its own broadcast,
+     * Anland only keeps a static reference to its activity. Called for every
+     * way a session can end -- the Stop button, a logout from inside the
+     * desktop, a crash -- because otherwise a dead surface stays on the
+     * external display with no way to dismiss it.
+     */
+    private fun closeFrontend() {
+        runCatching {
+            sendBroadcast(Intent("com.termux.x11.ACTION_STOP").apply {
+                setPackage(packageName)
+            })
+        }.onFailure { Log.w(TAG, "Could not stop the X11 frontend", it) }
+
+        runCatching {
+            com.anland.termux.MainActivity.sInstance?.let { activity ->
+                activity.runOnUiThread { activity.finishAndRemoveTask() }
+            }
+        }.onFailure { Log.w(TAG, "Could not close the Anland frontend", it) }
+    }
+
     private fun startSessionWatchdog() {
         watchdogJob?.cancel()
         watchdogJob = lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -196,6 +281,12 @@ class XiaoianService : LifecycleService() {
                 
                 // Once the process exits, it means the session is dead
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    // The sound server died with the session; the reader would
+                    // otherwise keep retrying a socket nobody listens on.
+                    audioPlayerJob?.cancel()
+                    audioPlayer?.stop()
+                    audioPlayer = null
+                    closeFrontend()
                     sessionManager.updateState(SessionState.Idle)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()

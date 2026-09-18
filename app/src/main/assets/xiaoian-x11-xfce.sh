@@ -17,21 +17,25 @@ SCRIPT_AUTHOR="Digheads Ferke"
 INFRA_ROOT="/data/local/xiaoian-x11-xfce"
 LIB_FILE="$INFRA_ROOT/lib.sh"
 LOG_FILE="$INFRA_ROOT/de_debug.log"
-INSTALLER_DIR="$INFRA_ROOT/install_files"
+XSERVER_LOG="$INFRA_ROOT/xserver.log"
+# Downloaded components (mesa, xwayland, kwin, helper scripts) live in the
+# app's own storage next to the rootfs tarball, not under the infra root:
+# both desktops pull the same assets, so sharing them halves the downloads,
+# and uninstalling one desktop no longer throws away the other's files.
+APP_DATA_DIR="/data/data/com.xiaoian.app"
+INSTALLER_DIR="$APP_DATA_DIR/files/downloads"
 
 # The script runs via plain `su -c` from the Xiaoian app, outside any
 # Termux environment. Runtime files live under the infra root; its tmp
 # directory is bind-mounted as /tmp into the chroot.
 export PATH="/system/bin:/system/xbin:$PATH"
-export TMPDIR="$INFRA_ROOT/tmp"
+export TMPDIR="/data/data/com.xiaoian.app/files/tmp"
 export XDG_RUNTIME_DIR="$TMPDIR"
 
-APP_PACKAGE="com.xiaoian.app"
+: "${HOME:=/data/local/tmp}"
+export HOME
 
-# Termux is optional: only PulseAudio (sound) still comes from it, and
-# its tar is preferred for the rootfs extraction when installed.
-TERMUX_PREFIX="/data/data/com.termux/files/usr"
-TERMUX_UID=$(stat -c "%u" "$TERMUX_PREFIX/bin/bash" 2>/dev/null)
+APP_PACKAGE="com.xiaoian.app"
 
 # Update checks against GitHub happen at most this often (seconds).
 UPDATE_CHECK_INTERVAL=86400
@@ -264,12 +268,39 @@ find_chroot_pids() {
     done
 }
 
-# Termux-side helpers of the desktop: exact process names plus
-# anchored cmdline patterns, never a bare word.
+# This shell, and every process that led to it. `pkill -f` matches against
+# full command lines, and the app starts this script as
+#   su -c 'ANLAND_BIN=<path> ... xiaoian-*.sh -s --local'
+# so anything named on our own command line -- $ANLAND_BIN above -- also
+# matches the shell doing the matching. Killing that is killing ourselves.
+self_and_ancestors() {
+    local p="$$" out=""
+    while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+        out="$out $p"
+        p=$(grep -m1 '^PPid:' "/proc/$p/status" 2>/dev/null | tr -dc '0-9')
+    done
+    echo "$out"
+}
+
+# Host-side helpers of the desktop: exact process names plus anchored
+# cmdline patterns, never a bare word. Both guards matter -- the anchor
+# keeps the pattern off our own command line, the ancestor check makes a
+# future unanchored pattern survivable instead of fatal.
 stop_host_procs() {
-    local sig="$1" n p
+    local sig="$1" n p pid skip
+    skip=" $(self_and_ancestors) "
     for n in $DE_HOST_NAMES; do killall -"$sig" "$n" 2>/dev/null; done
-    for p in $DE_HOST_PATTERNS; do pkill -"$sig" -f "$p" 2>/dev/null; done
+    for p in $DE_HOST_PATTERNS; do
+        for pid in $(pgrep -f "$p" 2>/dev/null); do
+            case "$skip" in
+                *" $pid "*)
+                    echo "[!] Refusing to $sig own process $pid (pattern: $p)"
+                    continue
+                    ;;
+            esac
+            kill -"$sig" "$pid" 2>/dev/null
+        done
+    done
 }
 
 wait_chroot_empty() {
@@ -402,16 +433,14 @@ step_done() { echo "@@DONE $1"; }
 
 # Usage: http_get <timeout s> <url> <output file> [progress id]
 # Downloads with the app's own HTTPS client, started through app_process
-# the same way as the X server; Termux wget is only a fallback.
+# the same way as the X server. Running the download inside the tool
+# rootfs is not an option: chroot hides the host paths it has to write to.
 http_get() {
     local t="$1" url="$2" out="$3" pid="$4" apk
     apk=$(app_apk_path)
-    if [ -n "$apk" ] && CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" timeout "$t" \
-            app_process /system/bin com.xiaoian.app.tools.Fetch "$url" "$out"; then
-        return 0
-    fi
-    [ -x "$TERMUX_PREFIX/bin/wget" ] || return 1
-    timeout "$t" "$TERMUX_PREFIX/bin/wget" -q -o /dev/null -O "$out" "$url"
+    [ -n "$apk" ] || { echo "[!] ERROR: cannot locate the $APP_PACKAGE APK." >&2; return 1; }
+    CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" timeout "$t" \
+        app_process /system/bin com.xiaoian.app.tools.Fetch "$url" "$out"
 }
 
 # Usage: http_cat <timeout s> <url>  (body on stdout)
@@ -428,14 +457,10 @@ http_cat() {
     return 1
 }
 
-# Prints a tar command that can extract .tar.xz: Termux tar when
-# installed, otherwise the busybox of the root solution.
+# Prints a tar command that can extract .tar.xz, from the busybox that
+# the root solution ships.
 find_xz_tar() {
     local b
-    if [ -x "$TERMUX_PREFIX/bin/tar" ]; then
-        echo "$TERMUX_PREFIX/bin/tar"
-        return 0
-    fi
     for b in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
         [ -x "$b" ] || continue
         "$b" tar --help 2>&1 | grep -q -- '-J' && { echo "$b tar"; return 0; }
@@ -448,19 +473,32 @@ find_xz_tar() {
 # read on fd 3 (the script's stdout); the compressed size is the known
 # total, so the app gets a real percentage without a second xz pass.
 extract_txz() {
-    local f="$1" dest="$2" pid="$3" tarcmd apk
+    local f="$1" dest="$2" pid="$3" tarcmd apk rc
     tarcmd=$(find_xz_tar) || {
-        echo "[!] ERROR: No tar with xz support found (Termux tar or Magisk/KernelSU/APatch busybox)."
+        echo "[!] ERROR: No tar with xz support found (Magisk/KernelSU/APatch busybox)."
         return 1
     }
+    echo "[*] Extractor: $tarcmd"
+    echo "[*] Source:    $f ($(du -h "$f" 2>/dev/null | cut -f1))"
+    echo "[*] Target:    $dest ($(df -h "$dest" 2>/dev/null | tail -1 | awk '{print $4}') free)"
+
     apk=$(app_apk_path)
     if [ -z "$apk" ]; then
+        echo "[!] WARNING: APK path unknown; extracting without progress reporting."
         $tarcmd -xJf "$f" -C "$dest"
         return
     fi
     { CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" \
         app_process /system/bin com.xiaoian.app.tools.Cat "$f" 2>&3 \
         | $tarcmd -xJf - -C "$dest"; } 3>&1
+    rc=$?
+    if [ "$rc" != "0" ]; then
+        echo "[!] ERROR: the extraction pipeline exited with status $rc."
+        echo "[!]   tar:  $tarcmd"
+        echo "[!]   into: $dest"
+        df -h "$dest" 2>&1 | sed 's/^/[!]   /'
+    fi
+    return $rc
 }
 
 safe_wipe_rootfs() {
@@ -480,7 +518,7 @@ safe_wipe_rootfs() {
 # a failed download never destroys the cached copy.
 fetch_asset() {
     local repo="$1" pattern="$2" friendly="$3" old_glob="$4" pid="$5"
-    local slug stamp cached api json matches url fname target f
+    local slug stamp cached api json matches url fname target f api_ok
     slug=$(printf '%s' "$friendly" | tr -c 'A-Za-z0-9' '_')
     stamp="$INSTALLER_DIR/.checked-$slug"
     cached=$(ls -t "$INSTALLER_DIR" 2>/dev/null | grep -E "^${pattern}\$" | head -1)
@@ -491,9 +529,11 @@ fetch_asset() {
     fi
 
     url=""
+    api_ok=0
     for api in "releases/latest" "releases?per_page=20"; do
         json=$(http_cat 20 "https://api.github.com/repos/${repo}/${api}" 2>/dev/null)
         [ -n "$json" ] || continue
+        api_ok=1
         matches=$(printf '%s\n' "$json" | tr ',' '\n' \
             | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
             | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' \
@@ -510,7 +550,18 @@ fetch_asset() {
             echo "[!] $friendly: update check failed (offline or rate-limited); using cached $cached"
             return 0
         fi
-        echo "[!] No matching asset for $friendly (pattern: $pattern) and nothing cached."
+        if [ "$api_ok" = "0" ]; then
+            # Nothing came back at all: the lookup failed, the pattern never
+            # got a chance. Telling these two apart is the difference between
+            # "upstream renamed the file" and "the downloader is broken".
+            echo "[!] $friendly: no response from the GitHub API."
+            echo "[!] The downloader writes its scratch file to \$TMPDIR ($TMPDIR);"
+            echo "[!] check that it exists and that the device is online."
+        else
+            echo "[!] No matching asset for $friendly (pattern: $pattern) and nothing cached."
+            echo "[!] The API answered, so the release exists but has no file"
+            echo "[!] matching that pattern -- upstream probably renamed it."
+        fi
         return 1
     fi
 
@@ -545,6 +596,12 @@ fetch_asset() {
 ensure_installer_dir() {
     mkdir -p "$INSTALLER_DIR" 2>/dev/null
     [ -d "$INSTALLER_DIR" ] || { echo "[!] Failed to create installer directory: $INSTALLER_DIR"; exit 1; }
+    # This is the app's private storage and the app writes the rootfs tarball
+    # here, so the directory has to stay owned by the app uid even though root
+    # is what creates the files in it.
+    _uid=$(stat -c %u "$APP_DATA_DIR" 2>/dev/null)
+    [ -n "$_uid" ] && chown "$_uid:$_uid" "$INSTALLER_DIR" 2>/dev/null
+    unset _uid
 }
 
 SESSION_SCRIPT="$DEBIAN_ROOTFS/start-xfce.sh"
@@ -648,7 +705,7 @@ do_version() {
     echo "Root:    $INFRA_ROOT"
     echo "Installer: $INSTALLER_DIR"
     echo "Mesa source: $MESA_REPO"
-    echo "Audio:   PulseAudio (optional Termux package, unix socket $PULSE_HOST_DIR/native)"
+    echo "Audio:   PulseAudio (chroot package, unix socket $PULSE_HOST_DIR/native)"
     echo "Tmp:     $TMPDIR (chroot /tmp)"
     echo "Updates: GitHub checked at most every $((UPDATE_CHECK_INTERVAL / 3600))h; works offline with cache"
 }
@@ -834,7 +891,9 @@ do_uninstall() {
     else
         echo ""
         echo "[*] Xiaoian fully uninstalled."
-        echo "[*] $INFRA_ROOT has been removed (including installer files)."
+        echo "[*] $INFRA_ROOT has been removed."
+        echo "[*] Downloaded components in $INSTALLER_DIR were kept;"
+        echo "[*] they are shared with the other desktop."
     fi
     echo "[*] You can now re-run '$0 -s' for a clean install."
 }
@@ -854,7 +913,6 @@ do_start() {
     step_plan settings "Checking display settings"
     step_plan driver "Freedreno GPU driver"
     if [ ! -f "$DEBIAN_ROOTFS/bin/bash" ]; then
-        step_plan rootfs-download "Downloading Debian rootfs"
         step_plan rootfs-extract "Extracting Debian rootfs"
     fi
     step_plan packages "Debian packages"
@@ -951,43 +1009,20 @@ do_start() {
         echo "[*] Debian rootfs found. Skipping installation."
     else
         echo "[*] Debian rootfs NOT found. Starting automated fresh installation..."
-        step rootfs-download
         safe_wipe_rootfs || exit 1
         mkdir -p "$DEBIAN_ROOTFS"
+        # The app downloads this and tells us where it put it. Hard-coding the
+        # path in two places is how they end up disagreeing.
+        ROOTFS_TARBALL="${XIAOIAN_ROOTFS_TARBALL:-$INSTALLER_DIR/rootfs-arm64.tar.xz}"
 
-        INDEX_URL="https://images.linuxcontainers.org/streams/v1/images.json"
-        echo "[*] Fetching latest rootfs date from LXC JSON index..."
-        LATEST_DATE=$(http_cat 30 "$INDEX_URL" \
-            | tr ',' '\n' \
-            | grep -o 'debian/trixie/arm64/default/[0-9]\{8\}_[0-9]\{2\}:[0-9]\{2\}' \
-            | sort | tail -1 | sed 's#.*/##')
-
-        if [ -z "$LATEST_DATE" ]; then
-            echo "[!] ERROR: Failed to fetch the latest rootfs date from LXC server."
+        if [ ! -s "$ROOTFS_TARBALL" ]; then
+            echo "[!] ERROR: Rootfs tarball not found at"
+            echo "[!]   $ROOTFS_TARBALL"
+            echo "[!] The app downloads it before starting a session."
+            echo "[!] Contents of $INSTALLER_DIR:"
+            ls -la "$INSTALLER_DIR" 2>&1 | sed 's/^/[!]   /'
             exit 1
         fi
-
-        DOWNLOAD_URL="https://images.linuxcontainers.org/images/debian/trixie/arm64/default/$LATEST_DATE/rootfs.tar.xz"
-        ROOTFS_TARBALL="$INSTALLER_DIR/debian-trixie-rootfs-$LATEST_DATE.tar.xz"
-
-        if [ -s "$ROOTFS_TARBALL" ]; then
-            echo "[*] Rootfs tarball already cached: $(basename "$ROOTFS_TARBALL")"
-        else
-            echo "[*] Downloading archive: $DOWNLOAD_URL"
-            rm -f "$ROOTFS_TARBALL.part"
-            if ! http_get 1800 "$DOWNLOAD_URL" "$ROOTFS_TARBALL.part" rootfs-download \
-               || [ ! -s "$ROOTFS_TARBALL.part" ]; then
-                rm -f "$ROOTFS_TARBALL.part"
-                echo "[!] ERROR: Download failed!"
-                exit 1
-            fi
-            mv -f "$ROOTFS_TARBALL.part" "$ROOTFS_TARBALL"
-        fi
-
-        for old in "$INSTALLER_DIR"/debian-trixie-rootfs-*.tar.xz; do
-            [ -f "$old" ] && [ "$old" != "$ROOTFS_TARBALL" ] && rm -f "$old"
-        done
-        step_done rootfs-download
 
         step rootfs-extract
         echo "[*] Extracting rootfs (this will take a few minutes)..."
@@ -1041,6 +1076,15 @@ PULSECLIENT
 
     rm -f $DEBIAN_ROOTFS/etc/resolv.conf
     echo 'nameserver 1.1.1.1' > $DEBIAN_ROOTFS/etc/resolv.conf
+
+    # apt drops to the _apt user to download, and Android only lets
+    # processes in the inet group (gid 3003) open a socket. Without these
+    # entries every apt-get inside the chroot fails to reach the network,
+    # which then shows up much later as a missing package.
+    for _g in "aid_inet:x:3003:_apt" "aid_net_raw:x:3004:_apt"; do
+        grep -q "^${_g%%:*}:" $DEBIAN_ROOTFS/etc/group 2>/dev/null \
+            || echo "$_g" >> $DEBIAN_ROOTFS/etc/group
+    done
 
     echo "[*] Verifying and mounting necessary file systems..."
     mount_all
@@ -1207,15 +1251,35 @@ SETUP
     # and takes the X11 font path from there.
     export CLASSPATH="$APK_PATH"
     export XKB_CONFIG_ROOT="$DEBIAN_ROOTFS/usr/share/X11/xkb"
-    if command -v setsid >/dev/null 2>&1; then
-        TMPDIR="$DEBIAN_ROOTFS/tmp" setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/dev/null 2>&1 &
-    else
-        TMPDIR="$DEBIAN_ROOTFS/tmp" app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/dev/null 2>&1 &
+    # CmdEntryPoint dlopens libXlorie.so from here; without it it falls back to
+    # reading the library out of the APK, which only works when native libs are
+    # stored uncompressed. The app exports XIAOIAN_LIB_DIR (ScriptEnv.kt); if
+    # the variable is missing, derive it from the APK path.
+    if [ -z "$XIAOIAN_LIB_DIR" ]; then
+        for _d in "$(dirname "$APK_PATH")"/lib/*; do
+            [ -f "$_d/libXlorie.so" ] && XIAOIAN_LIB_DIR="$_d" && break
+        done
+        unset _d
     fi
+    export XIAOIAN_LIB_DIR
+    echo "[*] Native library dir: ${XIAOIAN_LIB_DIR:-<unknown>}"
+    # Its own log, not $LOG_FILE: rotate_log runs later in this function
+    # and would truncate the file while the server still holds it open.
+    : > "$XSERVER_LOG"
+    if command -v setsid >/dev/null 2>&1; then
+        TMPDIR="$DEBIAN_ROOTFS/tmp" setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >> "$XSERVER_LOG" 2>&1 &
+    else
+        TMPDIR="$DEBIAN_ROOTFS/tmp" app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >> "$XSERVER_LOG" 2>&1 &
+    fi
+    XSERVER_PID=$!
 
     echo "[*] Waiting for X server socket at $DEBIAN_ROOTFS/tmp/.X11-unix/X0..."
     i=0
     while [ ! -S "$DEBIAN_ROOTFS/tmp/.X11-unix/X0" ] && [ $i -lt 100 ]; do
+        if ! kill -0 "$XSERVER_PID" 2>/dev/null; then
+            echo "[!] X server process exited after $((i/5))s."
+            break
+        fi
         sleep 0.2
         i=$((i+1))
     done
@@ -1224,6 +1288,24 @@ SETUP
         step_done xserver
     else
         echo "[!] ERROR: X server did not create socket in time."
+        echo "[!] ---- state ----"
+        echo "[!]   APK:    $APK_PATH"
+        echo "[!]   libdir: ${XIAOIAN_LIB_DIR:-<unknown>}"
+        echo "[!]   TMPDIR: $DEBIAN_ROOTFS/tmp"
+        ls -la "$DEBIAN_ROOTFS/tmp/.X11-unix" 2>&1 | sed 's/^/[!]   /'
+        if [ -d "$XKB_CONFIG_ROOT" ]; then
+            echo "[!]   xkb:    present"
+        else
+            echo "[!]   xkb:    $XKB_CONFIG_ROOT MISSING -- xkb-data did not install"
+        fi
+        # Printed last on purpose: the app keeps the tail of the output, and
+        # this is the part worth keeping.
+        echo "[!] ---- $XSERVER_LOG ----"
+        if [ -s "$XSERVER_LOG" ]; then
+            tail -25 "$XSERVER_LOG" 2>/dev/null | sed 's/^/[!]   /'
+        else
+            echo "[!]   (empty -- app_process produced no output at all)"
+        fi
         exit 1
     fi
 

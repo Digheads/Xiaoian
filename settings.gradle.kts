@@ -23,3 +23,4 @@ rootProject.name = "Xiaoian"
 include(":app")
 include(":lorie")
 include(":shell-loader:stub")
+include(":anland")
