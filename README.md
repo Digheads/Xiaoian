@@ -628,8 +628,8 @@ dpkg -r anland
 
 ---
 
-## License
+## Licence
 
-GPLv3 License — Copyright (c) 2026 Digheads
+GPLv3 Licence — Copyright (c) 2026 Digheads
 
-See the full license in the [LICENSE](LICENSE) file.
+See the full licence in the [LICENCE](LICENCE) file.
