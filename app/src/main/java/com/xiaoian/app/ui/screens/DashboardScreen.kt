@@ -1,25 +1,44 @@
 package com.xiaoian.app.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaoian.app.service.SessionState
+import com.xiaoian.app.service.SetupProgress
+import com.xiaoian.app.service.StorageInfo
 import com.xiaoian.app.ui.components.AppLogo
 
 @Composable
 fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel: DashboardViewModel = viewModel()) {
     val state by viewModel.sessionState.collectAsState()
     val setup by viewModel.setupProgress.collectAsState()
+    val xfceStorage by viewModel.xfceStorage.collectAsState()
+    val kdeStorage by viewModel.kdeStorage.collectAsState()
+    val storageLoading by viewModel.storageLoading.collectAsState()
+    val uninstallState by viewModel.uninstallState.collectAsState()
     
     var selectedDE by remember { mutableStateOf("kde") }
     var selectedMode by remember { mutableStateOf("extend") }
+    var showUninstallDialog by remember { mutableStateOf<String?>(null) }
+    
+    val scrollState = rememberScrollState()
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(innerPadding).padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(innerPadding)
+            .padding(16.dp)
+            .verticalScroll(scrollState),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -29,91 +48,301 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
         }
         Spacer(modifier = Modifier.height(32.dp))
         
-        when (val currentState = state) {
-            is SessionState.Idle -> {
-                // DE Selection
-                Text("Desktop Environment", style = MaterialTheme.typography.titleMedium)
-                Row(modifier = Modifier.padding(vertical = 8.dp)) {
-                    RadioButton(selected = selectedDE == "kde", onClick = { selectedDE = "kde" })
-                    Text("KDE (Wayland)", modifier = Modifier.align(Alignment.CenterVertically))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    RadioButton(selected = selectedDE == "xfce", onClick = { selectedDE = "xfce" })
-                    Text("XFCE (X11)", modifier = Modifier.align(Alignment.CenterVertically))
+        // Show Configuration and Start only when Idle
+        if (state is SessionState.Idle) {
+            // DE Selection
+            Text("Desktop Environment", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.padding(vertical = 8.dp)) {
+                RadioButton(selected = selectedDE == "kde", onClick = { selectedDE = "kde" })
+                Text("KDE (Wayland)", modifier = Modifier.align(Alignment.CenterVertically))
+                Spacer(modifier = Modifier.width(16.dp))
+                RadioButton(selected = selectedDE == "xfce", onClick = { selectedDE = "xfce" })
+                Text("XFCE (X11)", modifier = Modifier.align(Alignment.CenterVertically))
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Mode Selection
+            Text("Display Mode", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.padding(vertical = 8.dp)) {
+                RadioButton(selected = selectedMode == "extend", onClick = { selectedMode = "extend" })
+                Text("Extend", modifier = Modifier.align(Alignment.CenterVertically))
+                Spacer(modifier = Modifier.width(8.dp))
+                RadioButton(selected = selectedMode == "mirror", onClick = { selectedMode = "mirror" })
+                Text("Mirror", modifier = Modifier.align(Alignment.CenterVertically))
+                Spacer(modifier = Modifier.width(8.dp))
+                RadioButton(selected = selectedMode == "local", onClick = { selectedMode = "local" })
+                Text("Local", modifier = Modifier.align(Alignment.CenterVertically))
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Button(
+                onClick = { viewModel.startSession(selectedMode, selectedDE) },
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("START DESKTOP")
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Environments Section Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Environments", style = MaterialTheme.typography.titleMedium)
+            IconButton(
+                onClick = { viewModel.refreshStorage() },
+                enabled = !storageLoading
+            ) {
+                if (storageLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                 }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                // Mode Selection
-                Text("Display Mode", style = MaterialTheme.typography.titleMedium)
-                Row(modifier = Modifier.padding(vertical = 8.dp)) {
-                    RadioButton(selected = selectedMode == "extend", onClick = { selectedMode = "extend" })
-                    Text("Extend", modifier = Modifier.align(Alignment.CenterVertically))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    RadioButton(selected = selectedMode == "mirror", onClick = { selectedMode = "mirror" })
-                    Text("Mirror", modifier = Modifier.align(Alignment.CenterVertically))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    RadioButton(selected = selectedMode == "local", onClick = { selectedMode = "local" })
-                    Text("Local", modifier = Modifier.align(Alignment.CenterVertically))
-                }
-                
-                Spacer(modifier = Modifier.height(32.dp))
-                
-                Button(
-                    onClick = { viewModel.startSession(selectedMode, selectedDE) },
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Uninstall in progress overlay
+        if (uninstallState.inProgress) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("START DESKTOP")
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Removing: ${if (uninstallState.de == "kde") "KDE (Wayland)" else "XFCE (X11)"}",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        uninstallState.output,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
-            
-            is SessionState.Starting -> {
-                SetupProgressView(setup)
-            }
-            
-            is SessionState.Running -> {
-                Text("RUNNING", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
-                Text("Mode: ${currentState.mode} | DE: ${currentState.de}")
-                Text(if (currentState.isLocked) "Phone is LOCKED" else "Phone is UNLOCKED")
-                
-                Spacer(modifier = Modifier.height(32.dp))
-                
-                val context = androidx.compose.ui.platform.LocalContext.current
-                Button(
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val openDesktop = {
+            val intent = android.content.Intent(context, com.termux.x11.MainActivity::class.java)
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        }
+
+        // XFCE Card
+        InstalledEnvironmentCard(
+            name = "XFCE (X11)",
+            deId = "xfce",
+            info = xfceStorage,
+            loading = storageLoading,
+            sessionState = state,
+            selectedDE = selectedDE,
+            setupProgress = setup,
+            uninstallInProgress = uninstallState.inProgress,
+            onUninstall = { showUninstallDialog = "xfce" },
+            onOpenDesktop = openDesktop,
+            onStopSession = { viewModel.stopSession() }
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // KDE Card
+        InstalledEnvironmentCard(
+            name = "KDE (Wayland)",
+            deId = "kde",
+            info = kdeStorage,
+            loading = storageLoading,
+            sessionState = state,
+            selectedDE = selectedDE,
+            setupProgress = setup,
+            uninstallInProgress = uninstallState.inProgress,
+            onUninstall = { showUninstallDialog = "kde" },
+            onOpenDesktop = openDesktop,
+            onStopSession = { viewModel.stopSession() }
+        )
+    }
+
+    // Uninstall Confirmation Dialog
+    showUninstallDialog?.let { de ->
+        val envName = if (de == "kde") "KDE (Wayland)" else "XFCE (X11)"
+        AlertDialog(
+            onDismissRequest = { showUninstallDialog = null },
+            title = { Text("Uninstall Environment") },
+            text = {
+                Text("Are you sure you want to remove the $envName environment?\n\nThis action cannot be undone. The entire Debian rootfs and all installer files will be deleted.")
+            },
+            confirmButton = {
+                TextButton(
                     onClick = {
-                        val intent = android.content.Intent(context, com.termux.x11.MainActivity::class.java)
-                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
+                        showUninstallDialog = null
+                        viewModel.uninstall(de)
                     },
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
                 ) {
-                    Text("OPEN DESKTOP")
+                    Text("Delete")
                 }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Button(
-                    onClick = { viewModel.stopSession() },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    Text("STOP SESSION")
+            },
+            dismissButton = {
+                TextButton(onClick = { showUninstallDialog = null }) {
+                    Text("Cancel")
                 }
             }
-            
-            is SessionState.Stopping -> {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Stopping session...", style = MaterialTheme.typography.titleLarge)
+        )
+    }
+}
+
+@Composable
+fun InstalledEnvironmentCard(
+    name: String,
+    deId: String,
+    info: StorageInfo?,
+    loading: Boolean,
+    sessionState: SessionState,
+    selectedDE: String,
+    setupProgress: SetupProgress,
+    uninstallInProgress: Boolean,
+    onUninstall: () -> Unit,
+    onOpenDesktop: () -> Unit,
+    onStopSession: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (info?.installed == true)
+                MaterialTheme.colorScheme.surfaceVariant
+            else
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                if (info?.installed == true && sessionState is SessionState.Idle) {
+                    IconButton(
+                        onClick = onUninstall,
+                        enabled = !uninstallInProgress
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            if (loading && info == null) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+            } else if (info?.installed == true) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "System: ${StorageInfo.formatSize(info.rootfsSize)}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "Installer files: ${StorageInfo.formatSize(info.installerSize)}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Total: ${StorageInfo.formatSize(info.totalSize)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            } else {
+                Text(
+                    "Not installed",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
             }
             
-            is SessionState.Error -> {
-                Text("ERROR", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.titleLarge)
-                Text(currentState.message, color = MaterialTheme.colorScheme.error)
+            // Check if this card represents the active/starting/stopping session
+            val isActiveDE = when (sessionState) {
+                is SessionState.Starting -> selectedDE == deId
+                is SessionState.Running -> sessionState.de == deId
+                is SessionState.Stopping -> selectedDE == deId
+                is SessionState.Error -> selectedDE == deId
+                else -> false
+            }
+
+            if (isActiveDE) {
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(16.dp))
                 
-                Spacer(modifier = Modifier.height(32.dp))
-                
-                Button(onClick = { viewModel.stopSession() }) {
-                    Text("RESET")
+                when (sessionState) {
+                    is SessionState.Starting -> {
+                        Text("Status: Starting...", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        SetupProgressView(setupProgress)
+                    }
+                    is SessionState.Running -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Status: ", fontWeight = FontWeight.Bold)
+                            Text("RUNNING", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+                        Text("Display mode: ${sessionState.mode}")
+
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onOpenDesktop, modifier = Modifier.weight(1f)) {
+                                Text("OPEN DESKTOP")
+                            }
+                            Button(
+                                onClick = onStopSession, 
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("STOP")
+                            }
+                        }
+                    }
+                    is SessionState.Stopping -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text("Stopping session...")
+                        }
+                    }
+                    is SessionState.Error -> {
+                        Text("Status: ERROR", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                        Text(sessionState.message, color = MaterialTheme.colorScheme.error)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = onStopSession, modifier = Modifier.fillMaxWidth()) {
+                            Text("RESET")
+                        }
+                    }
+                    else -> {}
                 }
             }
         }

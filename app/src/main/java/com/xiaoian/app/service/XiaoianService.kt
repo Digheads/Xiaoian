@@ -41,6 +41,9 @@ class XiaoianService : LifecycleService() {
     private val setupTracker = SetupProgressTracker()
     @Volatile private var lastProgressNotification = 0L
 
+    private var audioPlayer: AudioPlayer? = null
+    private var audioPlayerJob: kotlinx.coroutines.Job? = null
+
     private var currentMode: String = "extend"
     private var currentDE: String = "kde"
     private var watchdogJob: Job? = null
@@ -75,8 +78,9 @@ class XiaoianService : LifecycleService() {
             try {
                 val scriptName = if (de == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
                 
-                // Extract script from assets to /data/local/tmp to avoid SELinux/noexec issues
-                val scriptPath = "/data/local/tmp/$scriptName"
+                // Extract script from assets to INFRA_ROOT to avoid SELinux/noexec issues and allow clean uninstalls
+                val infraRoot = if (de == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
+                val scriptPath = "$infraRoot/$scriptName"
                 val scriptFile = File(externalCacheDir, scriptName) // temporary staging in externalCacheDir so root can read it
 
                 // Copied on every start: a copy left over from an older app
@@ -86,7 +90,9 @@ class XiaoianService : LifecycleService() {
                         input.copyTo(output)
                     }
                 }
-                // Move to /data/local/tmp and make executable using root
+                
+                // Move to INFRA_ROOT and make executable using root
+                shellExecutor.run("mkdir -p $infraRoot")
                 shellExecutor.run("cp ${scriptFile.absolutePath} $scriptPath")
                 shellExecutor.run("chmod +x $scriptPath")
                 
@@ -102,6 +108,10 @@ class XiaoianService : LifecycleService() {
                 if (result.success) {
                     sessionManager.updateState(SessionState.Running(mode, de, false))
                     updateNotification("Session running")
+                    audioPlayer = AudioPlayer()
+                    audioPlayerJob = lifecycleScope.launch {
+                        audioPlayer?.start()
+                    }
                     startSessionWatchdog()
                 } else {
                     val errMsg = result.error.ifEmpty { "Failed to start session (exit code non-zero)" }
@@ -135,8 +145,12 @@ class XiaoianService : LifecycleService() {
         sessionManager.updateState(SessionState.Stopping)
         updateNotification("Stopping session...")
         lifecycleScope.launch {
+            audioPlayerJob?.cancel()
+            audioPlayer?.stop()
+            
             val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
-            val scriptPath = "/data/local/tmp/$scriptName"
+            val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
+            val scriptPath = "$infraRoot/$scriptName"
             shellExecutor.run("$scriptPath -t")
             
             // Close the X11 window if it is open
@@ -153,7 +167,8 @@ class XiaoianService : LifecycleService() {
     private fun lockPhone() {
         lifecycleScope.launch {
             val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
-            val scriptPath = "/data/local/tmp/$scriptName"
+            val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
+            val scriptPath = "$infraRoot/$scriptName"
             shellExecutor.run("$scriptPath -k")
             sessionManager.updateState(SessionState.Running(currentMode, currentDE, true))
             updateNotification("Session running (Phone Locked)")

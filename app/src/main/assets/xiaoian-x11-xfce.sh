@@ -1075,7 +1075,7 @@ export DEBIAN_FRONTEND=noninteractive
 export DEBCONF_NONINTERACTIVE_SEEN=true
 export APT_LISTCHANGES_FRONTEND=none
 
-REQUIRED_PKGS="xfce4 xfce4-terminal dbus-x11 dbus pulseaudio-utils libasound2-plugins alsa-utils libpulse0 mesa-utils libgl1-mesa-dri libegl-mesa0 x11-utils x11-xserver-utils x11-xkb-utils firefox-esr ffmpeg libavcodec-extra vulkan-tools wget unzip tar xz-utils xfonts-base fonts-liberation locales ca-certificates"
+REQUIRED_PKGS="xfce4 xfce4-terminal dbus-x11 dbus pulseaudio pulseaudio-utils libasound2-plugins alsa-utils libpulse0 mesa-utils libgl1-mesa-dri libegl-mesa0 x11-utils x11-xserver-utils x11-xkb-utils firefox-esr ffmpeg libavcodec-extra vulkan-tools wget unzip tar xz-utils xfonts-base fonts-liberation locales ca-certificates"
 
 MISSING_PKGS=""
 for pkg in $REQUIRED_PKGS; do
@@ -1148,7 +1148,7 @@ SETUP
     # Freedreno driver changed (it used to reinstall Mesa every start).
     # -----------------------------------------------------------------
     CHROOT_SETUP_NEEDED=0
-    for _p in xfce4 xfce4-terminal dbus-x11 libpulse0 libasound2-plugins \
+    for _p in xfce4 xfce4-terminal dbus-x11 pulseaudio libpulse0 libasound2-plugins \
               libgl1-mesa-dri x11-xserver-utils firefox-esr; do
         _abbrev=$(chroot "$DEBIAN_ROOTFS" /usr/bin/dpkg-query -W -f='${db:Status-Abbrev}' "$_p" 2>/dev/null)
         case "$_abbrev" in
@@ -1185,35 +1185,10 @@ SETUP
     step_done packages
 
     # -----------------------------------------------------------------
-    # PulseAudio (Termux side): unix socket only, no TCP port, so other
-    # Android apps cannot connect to it.
+    # PulseAudio is started inside the chroot using module-pipe-sink.
     # -----------------------------------------------------------------
     step audio
-    rm -rf "$PULSE_HOST_DIR"
-    if [ -n "$TERMUX_UID" ] && [ -x "$TERMUX_PREFIX/bin/pulseaudio" ]; then
-        echo "[*] Initializing PulseAudio sound server (in Termux, unix socket)..."
-        mkdir -p "$PULSE_HOST_DIR"
-        chown "$TERMUX_UID:$TERMUX_UID" "$PULSE_HOST_DIR"
-        chmod 0755 "$PULSE_HOST_DIR"
-        PA_ARGS="--start --exit-idle-time=-1 --load=module-sles-sink"
-        PA_ARGS="$PA_ARGS --load='module-native-protocol-unix auth-anonymous=1 socket=$PULSE_HOST_DIR/native'"
-        # PulseAudio keeps its own runtime files in the Termux tmp; only
-        # the socket lives in our $TMPDIR.
-        su "$TERMUX_UID" -c "env -i PATH=$TERMUX_PREFIX/bin TMPDIR=$TERMUX_PREFIX/tmp $TERMUX_PREFIX/bin/pulseaudio $PA_ARGS </dev/null >/dev/null 2>&1"
-        i=0
-        while [ ! -S "$PULSE_HOST_DIR/native" ] && [ $i -lt 25 ]; do
-            sleep 0.2
-            i=$((i+1))
-        done
-        if [ -S "$PULSE_HOST_DIR/native" ]; then
-            echo "[*] PulseAudio socket is up."
-        else
-            echo "[!] WARNING: PulseAudio socket not found; XFCE will have no sound."
-        fi
-    else
-        echo "[!] WARNING: Termux PulseAudio not found; XFCE will have no sound."
-        echo "[!] Optional: install Termux, then run in it: pkg install pulseaudio"
-    fi
+    echo "[*] Native PulseAudio integration configured."
     step_done audio
 
     # -----------------------------------------------------------------
@@ -1233,9 +1208,9 @@ SETUP
     export CLASSPATH="$APK_PATH"
     export XKB_CONFIG_ROOT="$DEBIAN_ROOTFS/usr/share/X11/xkb"
     if command -v setsid >/dev/null 2>&1; then
-        TMPDIR="$DEBIAN_ROOTFS/tmp" setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
+        TMPDIR="$DEBIAN_ROOTFS/tmp" setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/dev/null 2>&1 &
     else
-        TMPDIR="$DEBIAN_ROOTFS/tmp" app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
+        TMPDIR="$DEBIAN_ROOTFS/tmp" app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/dev/null 2>&1 &
     fi
 
     echo "[*] Waiting for X server socket at $DEBIAN_ROOTFS/tmp/.X11-unix/X0..."
@@ -1249,8 +1224,6 @@ SETUP
         step_done xserver
     else
         echo "[!] ERROR: X server did not create socket in time."
-        cp /data/local/tmp/dalvikvm_x11.log /sdcard/dalvikvm_x11.log
-        chmod 666 /sdcard/dalvikvm_x11.log
         exit 1
     fi
 
@@ -1280,7 +1253,7 @@ export TEMP=/tmp
 export TMP=/tmp
 export XDG_RUNTIME_DIR=/run/user/0
 export ICEAUTHORITY=/root/.ICEauthority
-export PULSE_SERVER=@PULSE_SERVER@
+export PULSE_SERVER=unix:/tmp/pulseaudio.socket
 export ALSA_CARD=default
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -1316,6 +1289,23 @@ if ! dbus-send --system --print-reply --dest=org.freedesktop.DBus / \
     dbus-daemon --system --fork </dev/null >/dev/null 2>&1
 fi
 
+# Start PulseAudio with TCP streaming (must be AFTER dbus)
+# Using null-sink + simple-protocol-tcp instead of pipe-sink:
+# - null-sink never blocks PulseAudio (no stuttering in XFCE apps)
+# - TCP socket has kernel buffering (absorbs reader jitter)
+# - No su/dd needed on the Android side to read audio
+
+cat > /tmp/xiaoian-pa.pa << 'PACONF'
+load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulseaudio.socket
+load-module module-null-sink sink_name=xiaoian_sink format=s16le rate=48000 channels=2 sink_properties=device.description=XiaoianAudio
+set-default-sink xiaoian_sink
+load-module module-simple-protocol-tcp port=34567 format=s16le rate=48000 channels=2 record=true playback=false source=xiaoian_sink.monitor
+PACONF
+
+pulseaudio --system=true --disallow-exit=true -n \
+  --file=/tmp/xiaoian-pa.pa 2>/dev/null &
+sleep 1  # give PA time to initialize
+
 if xdpyinfo -display :0 >/dev/null 2>&1; then
     setxkbmap hu 2>/dev/null
     xsetroot -solid "#2c3e50" 2>/dev/null
@@ -1327,7 +1317,6 @@ export DISPLAY=:0
 exec dbus-run-session -- xfce4-session
 SESSION
 
-    sed -i "s|@PULSE_SERVER@|unix:$PULSE_CHROOT_SOCKET|" "$SESSION_SCRIPT"
     chmod +x "$SESSION_SCRIPT"
 
     rotate_log

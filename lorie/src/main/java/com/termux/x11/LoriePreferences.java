@@ -185,7 +185,7 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
     private void showFragment(PreferenceFragmentCompat fragment) {
         getSupportFragmentManager().beginTransaction()
                 .setCustomAnimations(R.anim.slide_in_right, R.anim.slide_out_left, R.anim.slide_in_left, R.anim.slide_out_right)
-                .replace(android.R.id.content, fragment)
+                .replace(R.id.prefs_container, fragment)
                 .addToBackStack(null)
                 .commit();
     }
@@ -241,6 +241,15 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
             //noinspection DataFlowIssue
             ((LoriePreferences) getActivity()).getSupportActionBar().setTitle(getPreferenceScreen().getTitle());
         }
+
+        @Override
+        public void onViewCreated(@NonNull android.view.View view, @Nullable Bundle savedInstanceState) {
+            super.onViewCreated(view, savedInstanceState);
+            android.util.TypedValue typedValue = new android.util.TypedValue();
+            view.getContext().getTheme().resolveAttribute(android.R.attr.colorBackground, typedValue, true);
+            view.setBackgroundColor(typedValue.data);
+        }
+
 
         /** @noinspection SameParameterValue*/
         private void with(CharSequence key, Consumer<Preference> action) {
