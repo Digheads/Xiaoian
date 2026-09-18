@@ -13,6 +13,10 @@
 | R7 | External display APIs differ across OEMs | Medium | Medium | 🟡 |
 | R8 | APK size too large | Low | Low | 🟢 |
 | R9 | Performance regression vs standalone apps | Low | Medium | 🟢 |
+| R10 | Termux packages have a hardcoded `$PREFIX` — a Termux bootstrap does not work under `com.xiaoian.app` | High | Critical (Phase 3) | 🔴 |
+| R11 | targetSdk ≥ 29 blocks exec of binaries from the app's data dir (W^X) | High | High (Phase 3) | 🔴 |
+| R12 | No sound without Termux (XFCE) | Certain | Medium | 🟡 |
+| R13 | App downloader / busybox tar not available on a device | Low | High | 🟡 |
 
 ---
 
@@ -183,3 +187,48 @@ This is very reasonable. Termux itself is ~100+ MB after bootstrap.
 | **M9c:** Hardware acceleration | Ensure EGL/GLES rendering path is preserved (not software fallback). |
 
 **Recommendation:** M9a. Since we're forking the exact rendering code, there should be zero performance difference. The renderer doesn't care which APK it lives in.
+
+---
+
+## R10: Termux Packages Have a Hardcoded Prefix
+
+**Risk:** Termux binaries, scripts and `RUNPATH`s are built for `/data/data/com.termux/files/usr`. A Termux bootstrap extracted to `/data/data/com.xiaoian.app/files/usr` (the Phase 3 plan in [04](04-bootstrap-environment.md)) will not run without fixups: shebangs, library lookups and config paths all point to the Termux prefix.
+
+**Mitigations:**
+
+| Strategy | Details |
+|---|---|
+| **M10a:** Avoid a `$PREFIX` entirely | What XFCE already does: X server from the APK via `app_process`, downloads in the app, tar from the root solution's busybox. Remaining host-side tools run inside the Debian chroot instead. |
+| **M10b:** Rebuild the needed packages with a custom prefix | termux-packages supports building for a different package name; high maintenance cost. |
+| **M10c:** Keep Termux as an optional dependency | Only for components that cannot be replaced yet (PulseAudio, `anland`). |
+
+**Recommendation:** M10a, with M10c as a bridge. Re-evaluate Phase 3's bootstrap plan before starting it.
+
+---
+
+## R11: W^X Exec Restriction
+
+**Risk:** With `targetSdk` ≥ 29, an app process may not `exec` files from its own writable data directory. Termux stays on targetSdk 28 for this reason. The app targets 35, so a `$PREFIX` in the app's data dir cannot be executed from the app's own context (for example the Phase 3 "Local" terminal session).
+
+**Mitigations:** run such binaries through `su` (root is required anyway), or ship the executables as `lib*.so` in `jniLibs` (extracted to the read-only native library dir, which may be executed).
+
+---
+
+## R12: Sound Without Termux
+
+**Risk:** XFCE sound still uses Termux PulseAudio (`module-sles-sink`). Without Termux the desktop runs silently. Termux:X11 has no audio forwarding that could replace it.
+
+**Options:**
+
+| Strategy | Details |
+|---|---|
+| **M12a:** PulseAudio/PipeWire inside the chroot + an Android sink in the app | The app plays PCM from a unix socket with `AudioTrack` (and `AudioRecord` for the mic). This is essentially what Anland does for KDE. |
+| **M12b:** Keep Termux PulseAudio as optional | Current state: works if Termux + `pulseaudio` are installed. |
+
+---
+
+## R13: Host Tool Availability (XFCE)
+
+**Risk:** The XFCE script now depends on (a) the app's `com.xiaoian.app.tools.Fetch` running under `app_process` with working TLS, and (b) a busybox with xz-capable `tar` from Magisk / KernelSU / APatch for the first rootfs extraction. Neither has been tested on a device yet.
+
+**Mitigations:** Termux wget/tar remain as fallbacks when Termux is installed. If busybox `tar -J` is missing on some root solution, the next step is to extract `.tar.xz` in the app (xz + tar Java library, preserving modes, owners and symlinks).

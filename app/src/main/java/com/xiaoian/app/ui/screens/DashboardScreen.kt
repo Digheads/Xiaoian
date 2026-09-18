@@ -8,10 +8,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaoian.app.service.SessionState
+import com.xiaoian.app.ui.components.AppLogo
 
 @Composable
 fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel: DashboardViewModel = viewModel()) {
     val state by viewModel.sessionState.collectAsState()
+    val setup by viewModel.setupProgress.collectAsState()
     
     var selectedDE by remember { mutableStateOf("kde") }
     var selectedMode by remember { mutableStateOf("extend") }
@@ -20,7 +22,11 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
         modifier = Modifier.fillMaxSize().padding(innerPadding).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Xiaoian", style = MaterialTheme.typography.headlineLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppLogo(modifier = Modifier.size(48.dp))
+            Spacer(modifier = Modifier.width(12.dp))
+            Text("Xiaoian", style = MaterialTheme.typography.headlineLarge)
+        }
         Spacer(modifier = Modifier.height(32.dp))
         
         when (val currentState = state) {
@@ -60,17 +66,8 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
                 }
             }
             
-            is SessionState.Installing -> {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Installing...", style = MaterialTheme.typography.titleLarge)
-                Text(currentState.progress, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            
             is SessionState.Starting -> {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Starting session...", style = MaterialTheme.typography.titleLarge)
+                SetupProgressView(setup)
             }
             
             is SessionState.Running -> {

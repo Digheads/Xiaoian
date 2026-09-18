@@ -2,29 +2,36 @@
 
 # =====================================================================
 # xiaoian.sh — Debian chroot + XFCE4 + Termux:X11 launcher
-# Version: 1.5.0
-# Date:    2026-09-17
+# Version: 1.6.0
+# Date:    2026-09-18
 # Author:  Digheads Ferke
 # =====================================================================
 
 # =====================================================================
 # 1. CONFIG
 # =====================================================================
-SCRIPT_VERSION="1.5.0"
-SCRIPT_DATE="2026-09-17"
+SCRIPT_VERSION="1.6.0"
+SCRIPT_DATE="2026-09-18"
 SCRIPT_AUTHOR="Digheads Ferke"
-
-export PREFIX="/data/data/com.termux/files/usr"
-export PATH="$PREFIX/bin:$PREFIX/bin/applets:/system/bin:/system/xbin:$PATH"
-export TMPDIR="$PREFIX/tmp"
-export XDG_RUNTIME_DIR="$TMPDIR"
-
-TERMUX_UID=$(stat -c "%u" /data/data/com.termux/files/usr/bin/bash 2>/dev/null || echo 10422)
 
 INFRA_ROOT="/data/local/xiaoian-x11-xfce"
 LIB_FILE="$INFRA_ROOT/lib.sh"
 LOG_FILE="$INFRA_ROOT/de_debug.log"
 INSTALLER_DIR="$INFRA_ROOT/install_files"
+
+# The script runs via plain `su -c` from the Xiaoian app, outside any
+# Termux environment. Runtime files live under the infra root; its tmp
+# directory is bind-mounted as /tmp into the chroot.
+export PATH="/system/bin:/system/xbin:$PATH"
+export TMPDIR="$INFRA_ROOT/tmp"
+export XDG_RUNTIME_DIR="$TMPDIR"
+
+APP_PACKAGE="com.xiaoian.app"
+
+# Termux is optional: only PulseAudio (sound) still comes from it, and
+# its tar is preferred for the rootfs extraction when installed.
+TERMUX_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_UID=$(stat -c "%u" "$TERMUX_PREFIX/bin/bash" 2>/dev/null)
 
 # Update checks against GitHub happen at most this often (seconds).
 UPDATE_CHECK_INTERVAL=86400
@@ -32,16 +39,14 @@ UPDATE_CHECK_INTERVAL=86400
 MESA_REPO="lfdevs/mesa-for-android-container"
 MESA_ASSET_PATTERN="mesa-for-android-container_[^/]*_debian_trixie_arm64\\.tar\\.gz"
 
-TERMUX_X11_PACKAGE="com.xiaoian.app"
-
-# PulseAudio (Termux side) listens on a unix socket in Termux $TMPDIR,
-# which the chroot sees under /tmp. No TCP port is opened.
+# PulseAudio (Termux side) listens on a unix socket in $TMPDIR, which
+# the chroot sees under /tmp. No TCP port is opened.
 PULSE_HOST_DIR="$TMPDIR/xiaoian-pulse"
 PULSE_CHROOT_SOCKET="/tmp/xiaoian-pulse/native"
 
 # Desktop-specific values consumed by the common library (section 3).
 # termux-x11 renames its process to "termux-x11 com.termux.x11 <args>".
-DE_APP_PACKAGE="$TERMUX_X11_PACKAGE"
+DE_APP_PACKAGE="$APP_PACKAGE"
 DE_SESSION_PROC="xfce4-session"
 DE_HOST_NAMES="pulseaudio"
 DE_HOST_PATTERNS='^termux-x11.com\.termux\.x11 com\.termux\.x11\.Loader'
@@ -131,7 +136,11 @@ done
 
 [ -z "$ACTION" ] && ACTION="start"
 
-mkdir -p "$INFRA_ROOT" 2>/dev/null
+mkdir -p "$INFRA_ROOT" "$TMPDIR" 2>/dev/null
+# Explicit modes: the su umask may be 077, and the Termux-UID PulseAudio
+# must be able to reach its socket directory under $TMPDIR.
+chmod 0755 "$INFRA_ROOT" 2>/dev/null
+chmod 1777 "$TMPDIR" 2>/dev/null
 
 # =====================================================================
 # 3. COMMON LIBRARY
@@ -377,6 +386,83 @@ wait_for_session() {
     kill -0 "$wrapper_pid" 2>/dev/null
 }
 
+app_apk_path() {
+    pm path "$APP_PACKAGE" 2>/dev/null | sed -n '1s/^package://p'
+}
+
+# ---- progress protocol ---------------------------------------------------
+# Machine-readable lines for the app, next to the human "[*]" lines:
+#   @@PLAN <id> <title>   (all steps of this run, announced up front)
+#   @@STEP <id>   @@PROGRESS <id> <done bytes> <total bytes|-1>   @@DONE <id>
+# The app's Fetch and Cat tools print @@PROGRESS themselves when
+# XIAOIAN_PROGRESS_ID is set.
+step_plan() { echo "@@PLAN $1 $2"; }
+step()      { echo "@@STEP $1"; }
+step_done() { echo "@@DONE $1"; }
+
+# Usage: http_get <timeout s> <url> <output file> [progress id]
+# Downloads with the app's own HTTPS client, started through app_process
+# the same way as the X server; Termux wget is only a fallback.
+http_get() {
+    local t="$1" url="$2" out="$3" pid="$4" apk
+    apk=$(app_apk_path)
+    if [ -n "$apk" ] && CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" timeout "$t" \
+            app_process /system/bin com.xiaoian.app.tools.Fetch "$url" "$out"; then
+        return 0
+    fi
+    [ -x "$TERMUX_PREFIX/bin/wget" ] || return 1
+    timeout "$t" "$TERMUX_PREFIX/bin/wget" -q -o /dev/null -O "$out" "$url"
+}
+
+# Usage: http_cat <timeout s> <url>  (body on stdout)
+# Goes through a temp file, so a failed first try never leaves partial
+# output in the caller's pipe.
+http_cat() {
+    local tmp="$TMPDIR/.http_cat.$$"
+    if http_get "$1" "$2" "$tmp"; then
+        cat "$tmp"
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Prints a tar command that can extract .tar.xz: Termux tar when
+# installed, otherwise the busybox of the root solution.
+find_xz_tar() {
+    local b
+    if [ -x "$TERMUX_PREFIX/bin/tar" ]; then
+        echo "$TERMUX_PREFIX/bin/tar"
+        return 0
+    fi
+    for b in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
+        [ -x "$b" ] || continue
+        "$b" tar --help 2>&1 | grep -q -- '-J' && { echo "$b tar"; return 0; }
+    done
+    return 1
+}
+
+# Usage: extract_txz <tarball> <destination dir> <progress id>
+# The app's Cat tool feeds the tarball into tar and reports the bytes
+# read on fd 3 (the script's stdout); the compressed size is the known
+# total, so the app gets a real percentage without a second xz pass.
+extract_txz() {
+    local f="$1" dest="$2" pid="$3" tarcmd apk
+    tarcmd=$(find_xz_tar) || {
+        echo "[!] ERROR: No tar with xz support found (Termux tar or Magisk/KernelSU/APatch busybox)."
+        return 1
+    }
+    apk=$(app_apk_path)
+    if [ -z "$apk" ]; then
+        $tarcmd -xJf "$f" -C "$dest"
+        return
+    fi
+    { CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" \
+        app_process /system/bin com.xiaoian.app.tools.Cat "$f" 2>&3 \
+        | $tarcmd -xJf - -C "$dest"; } 3>&1
+}
+
 safe_wipe_rootfs() {
     unmount_all || {
         echo "[!] Refusing to rm -rf: mounts still active under $DEBIAN_ROOTFS."
@@ -387,13 +473,13 @@ safe_wipe_rootfs() {
     return 0
 }
 
-# Usage: fetch_asset <repo> <file-name regex> <friendly name> <old-version glob>
+# Usage: fetch_asset <repo> <file-name regex> <friendly name> <old-version glob> [progress id]
 # Offline-friendly: a cached asset is used as-is when the last update
 # check is younger than UPDATE_CHECK_INTERVAL, or when GitHub cannot be
 # reached (offline / API rate limit). Downloads go to a .part file, so
 # a failed download never destroys the cached copy.
 fetch_asset() {
-    local repo="$1" pattern="$2" friendly="$3" old_glob="$4"
+    local repo="$1" pattern="$2" friendly="$3" old_glob="$4" pid="$5"
     local slug stamp cached api json matches url fname target f
     slug=$(printf '%s' "$friendly" | tr -c 'A-Za-z0-9' '_')
     stamp="$INSTALLER_DIR/.checked-$slug"
@@ -406,8 +492,7 @@ fetch_asset() {
 
     url=""
     for api in "releases/latest" "releases?per_page=20"; do
-        json=$(timeout 20 "$PREFIX/bin/wget" -q -o /dev/null -O - \
-            "https://api.github.com/repos/${repo}/${api}" 2>/dev/null)
+        json=$(http_cat 20 "https://api.github.com/repos/${repo}/${api}" 2>/dev/null)
         [ -n "$json" ] || continue
         matches=$(printf '%s\n' "$json" | tr ',' '\n' \
             | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -436,7 +521,7 @@ fetch_asset() {
     else
         echo "[*] Downloading $friendly: $fname"
         rm -f "$target.part"
-        if ! timeout 900 "$PREFIX/bin/wget" -q -o /dev/null -O "$target.part" "$url" \
+        if ! http_get 900 "$url" "$target.part" "$pid" \
            || [ ! -s "$target.part" ]; then
             rm -f "$target.part"
             if [ -n "$cached" ]; then
@@ -563,7 +648,8 @@ do_version() {
     echo "Root:    $INFRA_ROOT"
     echo "Installer: $INSTALLER_DIR"
     echo "Mesa source: $MESA_REPO"
-    echo "Audio:   PulseAudio (Termux, unix socket $PULSE_HOST_DIR/native)"
+    echo "Audio:   PulseAudio (optional Termux package, unix socket $PULSE_HOST_DIR/native)"
+    echo "Tmp:     $TMPDIR (chroot /tmp)"
     echo "Updates: GitHub checked at most every $((UPDATE_CHECK_INTERVAL / 3600))h; works offline with cache"
 }
 
@@ -613,7 +699,7 @@ do_lock() {
         if [ -n "$EXT_ID" ]; then
             echo "[*] Ensure Termux:X11 on external display (id=$EXT_ID)..."
             /system/bin/am start --display "$EXT_ID" \
-                -n "$TERMUX_X11_PACKAGE"/com.termux.x11.MainActivity \
+                -n "$APP_PACKAGE"/com.termux.x11.MainActivity \
                 --windowingMode 1 -f 0x18000000 2>/dev/null
         else
             echo "[!] No external display detected; Termux:X11 not relaunched."
@@ -765,6 +851,18 @@ do_start() {
 
     rm -f "$MODE_FILE"
 
+    step_plan settings "Checking display settings"
+    step_plan driver "Freedreno GPU driver"
+    if [ ! -f "$DEBIAN_ROOTFS/bin/bash" ]; then
+        step_plan rootfs-download "Downloading Debian rootfs"
+        step_plan rootfs-extract "Extracting Debian rootfs"
+    fi
+    step_plan packages "Debian packages"
+    step_plan audio "Sound server"
+    step_plan xserver "X server"
+    step_plan session "XFCE desktop"
+
+    step settings
     if [ "$MODE" != "local" ]; then
         if [ "$MODE" = "mirror" ]; then
             WANT_FREEFORM=1; WANT_DESKTOP=0; WANT_NONRESIZE=0; WANT_RESIZE=0
@@ -825,15 +923,17 @@ do_start() {
         fi
         echo "[*] External display detected: displayId=$EXTERNAL_DISPLAY_ID"
     fi
+    step_done settings
 
     ensure_installer_dir
     echo ""
     echo "[*] Root:      $INFRA_ROOT"
     echo "[*] Installer: $INSTALLER_DIR"
+    step driver
     echo "[*] Checking Freedreno (KGSL) Mesa driver..."
 
     fetch_asset "$MESA_REPO" "$MESA_ASSET_PATTERN" "Freedreno driver" \
-        "mesa-for-android-container*.tar.gz" || exit 1
+        "mesa-for-android-container*.tar.gz" driver || exit 1
 
     LOCAL_MESA_TAR=""
     for f in "$INSTALLER_DIR"/mesa-for-android-container*.tar.gz; do
@@ -845,17 +945,19 @@ do_start() {
         exit 1
     fi
     echo "[*] Freedreno driver: $(basename "$LOCAL_MESA_TAR")"
+    step_done driver
 
     if [ -f "$DEBIAN_ROOTFS/bin/bash" ]; then
         echo "[*] Debian rootfs found. Skipping installation."
     else
         echo "[*] Debian rootfs NOT found. Starting automated fresh installation..."
+        step rootfs-download
         safe_wipe_rootfs || exit 1
         mkdir -p "$DEBIAN_ROOTFS"
 
         INDEX_URL="https://images.linuxcontainers.org/streams/v1/images.json"
         echo "[*] Fetching latest rootfs date from LXC JSON index..."
-        LATEST_DATE=$(timeout 30 $PREFIX/bin/wget -q -o /dev/null -O - "$INDEX_URL" \
+        LATEST_DATE=$(http_cat 30 "$INDEX_URL" \
             | tr ',' '\n' \
             | grep -o 'debian/trixie/arm64/default/[0-9]\{8\}_[0-9]\{2\}:[0-9]\{2\}' \
             | sort | tail -1 | sed 's#.*/##')
@@ -872,18 +974,27 @@ do_start() {
             echo "[*] Rootfs tarball already cached: $(basename "$ROOTFS_TARBALL")"
         else
             echo "[*] Downloading archive: $DOWNLOAD_URL"
-            timeout 1800 "$PREFIX/bin/wget" -q -o /dev/null -O "$ROOTFS_TARBALL" "$DOWNLOAD_URL" \
-                || { echo "[!] ERROR: Download failed!"; exit 1; }
+            rm -f "$ROOTFS_TARBALL.part"
+            if ! http_get 1800 "$DOWNLOAD_URL" "$ROOTFS_TARBALL.part" rootfs-download \
+               || [ ! -s "$ROOTFS_TARBALL.part" ]; then
+                rm -f "$ROOTFS_TARBALL.part"
+                echo "[!] ERROR: Download failed!"
+                exit 1
+            fi
+            mv -f "$ROOTFS_TARBALL.part" "$ROOTFS_TARBALL"
         fi
 
         for old in "$INSTALLER_DIR"/debian-trixie-rootfs-*.tar.xz; do
             [ -f "$old" ] && [ "$old" != "$ROOTFS_TARBALL" ] && rm -f "$old"
         done
+        step_done rootfs-download
 
+        step rootfs-extract
         echo "[*] Extracting rootfs (this will take a few minutes)..."
-        $PREFIX/bin/tar -xJf "$ROOTFS_TARBALL" -C "$DEBIAN_ROOTFS" \
+        extract_txz "$ROOTFS_TARBALL" "$DEBIAN_ROOTFS" rootfs-extract \
             || { echo "[!] ERROR: Extraction failed!"; exit 1; }
         echo "[*] Debian rootfs installation successfully completed!"
+        step_done rootfs-extract
     fi
 
     echo "[*] Removing previous session locks..."
@@ -952,8 +1063,11 @@ XFWM
         echo "[*] Existing XFCE window-manager config found; leaving it alone."
     fi
 
+    step packages
     echo "[*] Checking Debian dependencies and GPU drivers..."
 
+    # APT::Status-Fd=1 adds machine-readable "dlstatus:" / "pmstatus:"
+    # lines to stdout, which the app turns into the progress bar.
     cat << 'SETUP' > "$SETUP_SCRIPT"
 #!/bin/bash
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -974,14 +1088,15 @@ if [ -n "$MISSING_PKGS" ]; then
     echo "[*] Installing missing dependencies: $MISSING_PKGS"
     STAMP=/var/lib/apt/periodic/update-success-stamp
     if [ ! -f "$STAMP" ]; then
-        apt-get update
+        apt-get -o APT::Status-Fd=1 update
     else
         AGE=$(( $(date +%s) - $(stat -c %Y "$STAMP") ))
         if [ "$AGE" -gt 86400 ]; then
-            apt-get update
+            apt-get -o APT::Status-Fd=1 update
         fi
     fi
     apt-get install -y --no-install-recommends \
+        -o APT::Status-Fd=1 \
         -o Dpkg::Options::="--force-confold" \
         -o Dpkg::Options::="--force-confdef" \
         $MISSING_PKGS
@@ -1067,47 +1182,60 @@ SETUP
     else
         echo "[*] All packages present and Freedreno driver unchanged; skipping setup."
     fi
+    step_done packages
 
     # -----------------------------------------------------------------
     # PulseAudio (Termux side): unix socket only, no TCP port, so other
     # Android apps cannot connect to it.
     # -----------------------------------------------------------------
-    echo "[*] Initializing PulseAudio sound server (in Termux, unix socket)..."
+    step audio
     rm -rf "$PULSE_HOST_DIR"
-    mkdir -p "$PULSE_HOST_DIR"
-    chown "$TERMUX_UID:$TERMUX_UID" "$PULSE_HOST_DIR"
-    chmod 0755 "$PULSE_HOST_DIR"
-    PA_ARGS="--start --exit-idle-time=-1 --load=module-sles-sink"
-    PA_ARGS="$PA_ARGS --load='module-native-protocol-unix auth-anonymous=1 socket=$PULSE_HOST_DIR/native'"
-    su "$TERMUX_UID" -c "env -i PATH=$PREFIX/bin TMPDIR=$TMPDIR $PREFIX/bin/pulseaudio $PA_ARGS </dev/null >/dev/null 2>&1"
-    i=0
-    while [ ! -S "$PULSE_HOST_DIR/native" ] && [ $i -lt 25 ]; do
-        sleep 0.2
-        i=$((i+1))
-    done
-    if [ -S "$PULSE_HOST_DIR/native" ]; then
-        echo "[*] PulseAudio socket is up."
+    if [ -n "$TERMUX_UID" ] && [ -x "$TERMUX_PREFIX/bin/pulseaudio" ]; then
+        echo "[*] Initializing PulseAudio sound server (in Termux, unix socket)..."
+        mkdir -p "$PULSE_HOST_DIR"
+        chown "$TERMUX_UID:$TERMUX_UID" "$PULSE_HOST_DIR"
+        chmod 0755 "$PULSE_HOST_DIR"
+        PA_ARGS="--start --exit-idle-time=-1 --load=module-sles-sink"
+        PA_ARGS="$PA_ARGS --load='module-native-protocol-unix auth-anonymous=1 socket=$PULSE_HOST_DIR/native'"
+        # PulseAudio keeps its own runtime files in the Termux tmp; only
+        # the socket lives in our $TMPDIR.
+        su "$TERMUX_UID" -c "env -i PATH=$TERMUX_PREFIX/bin TMPDIR=$TERMUX_PREFIX/tmp $TERMUX_PREFIX/bin/pulseaudio $PA_ARGS </dev/null >/dev/null 2>&1"
+        i=0
+        while [ ! -S "$PULSE_HOST_DIR/native" ] && [ $i -lt 25 ]; do
+            sleep 0.2
+            i=$((i+1))
+        done
+        if [ -S "$PULSE_HOST_DIR/native" ]; then
+            echo "[*] PulseAudio socket is up."
+        else
+            echo "[!] WARNING: PulseAudio socket not found; XFCE will have no sound."
+        fi
     else
-        echo "[!] WARNING: PulseAudio socket not found; XFCE will have no sound."
-        echo "[!] Check in Termux: pkg install pulseaudio"
+        echo "[!] WARNING: Termux PulseAudio not found; XFCE will have no sound."
+        echo "[!] Optional: install Termux, then run in it: pkg install pulseaudio"
     fi
+    step_done audio
 
     # -----------------------------------------------------------------
     # X server first, then the app: the socket is polled instead of a
     # fixed sleep after launching the app.
     # -----------------------------------------------------------------
+    step xserver
     echo "[*] Starting Termux:X11 display server in background..."
-    APK_PATH=$(pm path com.xiaoian.app | cut -d':' -f2)
+    APK_PATH=$(app_apk_path)
     if [ -z "$APK_PATH" ]; then
-        echo "[!] ERROR: Could not find com.xiaoian.app APK path."
+        echo "[!] ERROR: Could not find $APP_PACKAGE APK path."
         exit 1
     fi
+    # TMPDIR is the chroot's /tmp (same directory as our bind-mounted
+    # $TMPDIR): the X server derives the container root from its parent
+    # and takes the X11 font path from there.
     export CLASSPATH="$APK_PATH"
     export XKB_CONFIG_ROOT="$DEBIAN_ROOTFS/usr/share/X11/xkb"
     if command -v setsid >/dev/null 2>&1; then
-        setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
+        TMPDIR="$DEBIAN_ROOTFS/tmp" setsid app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
     else
-        app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
+        TMPDIR="$DEBIAN_ROOTFS/tmp" app_process /system/bin com.termux.x11.CmdEntryPoint :0 -ac -nolisten tcp >/data/local/tmp/dalvikvm_x11.log 2>&1 &
     fi
 
     echo "[*] Waiting for X server socket at $DEBIAN_ROOTFS/tmp/.X11-unix/X0..."
@@ -1118,6 +1246,7 @@ SETUP
     done
     if [ -S "$DEBIAN_ROOTFS/tmp/.X11-unix/X0" ]; then
         echo "[*] X server is up (took $((i/5))s)."
+        step_done xserver
     else
         echo "[!] ERROR: X server did not create socket in time."
         cp /data/local/tmp/dalvikvm_x11.log /sdcard/dalvikvm_x11.log
@@ -1134,11 +1263,11 @@ SETUP
 
     if [ "$MODE" = "extend" ]; then
         echo "[*] Launching Termux:X11 on external display (displayId=$EXTERNAL_DISPLAY_ID)..."
-        /system/bin/am start -n "$TERMUX_X11_PACKAGE"/com.termux.x11.MainActivity \
+        /system/bin/am start -n "$APP_PACKAGE"/com.termux.x11.MainActivity \
             --display "$EXTERNAL_DISPLAY_ID" --windowingMode 1 -f 0x18000000
     else
         echo "[*] Launching Termux:X11 Android frontend application..."
-        /system/bin/am start -n "$TERMUX_X11_PACKAGE"/com.termux.x11.MainActivity
+        /system/bin/am start -n "$APP_PACKAGE"/com.termux.x11.MainActivity
     fi
 
     cat << 'SESSION' > "$SESSION_SCRIPT"
@@ -1241,6 +1370,7 @@ WRAPPER
     chmod 0644 "$MODE_FILE"
 
     echo ""
+    step session
     echo "[*] Booting XFCE4 Desktop Environment in a detached session..."
     echo "[*] Detailed logs: $LOG_FILE (previous run: $LOG_FILE.1)"
 
@@ -1254,9 +1384,10 @@ WRAPPER
 
     if wait_for_session "$WRAPPER_PID"; then
         echo ""
+        step_done session
         echo "[*] Xiaoian is running ($MODE mode)."
         echo "[*] Session PID: $WRAPPER_PID (saved to $STATE_FILE)"
-        echo "[*] You can safely close Termux now."
+        echo "[*] The session keeps running in the background."
         echo ""
 
         if [ "$MODE" = "local" ]; then

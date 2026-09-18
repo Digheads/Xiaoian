@@ -4,6 +4,28 @@
 
 The existing shell scripts (`xiaoian-wayland-kde.sh` and `xiaoian-x11-xfce.sh`) remain the core engine. Only minimal changes are needed to support running from the Xiaoian app instead of a standalone Termux session.
 
+**Where the scripts live:** the app variants are in `app/src/main/assets/` (bundled in the APK, copied to `/data/local/tmp` and run via `su -c` on every start). The scripts in the repo root are the standalone Termux **reference** versions and stay unchanged.
+
+## Implemented: XFCE (script 1.6.0)
+
+The app does not use a Xiaoian `$PREFIX` (Change 1 below) for XFCE. It removes the Termux dependency instead:
+
+| Area | Before (Termux reference) | Now (`assets/xiaoian-x11-xfce.sh`) |
+|---|---|---|
+| `$PREFIX` / `PATH` | Termux `$PREFIX/bin` first | No `$PREFIX`; `PATH=/system/bin:/system/xbin` |
+| `$TMPDIR` | `$PREFIX/tmp` (Termux) | `$INFRA_ROOT/tmp` (mode 1777), bind-mounted as chroot `/tmp` |
+| X server | `$PREFIX/bin/termux-x11` | APK via `app_process … CmdEntryPoint`, with `TMPDIR=<rootfs>/tmp` |
+| Downloads | `$PREFIX/bin/wget` | `http_get` / `http_cat` → app downloader `com.xiaoian.app.tools.Fetch` via `app_process`; Termux wget as fallback |
+| Rootfs `.tar.xz` extraction | `$PREFIX/bin/tar` | `find_xz_tar`: Termux tar if installed, else Magisk / KernelSU / APatch busybox with `-J` |
+| Rootfs download | written directly to the target | `.part` file, renamed on success (a broken download is no longer treated as cached) |
+| PulseAudio | required (Termux) | Optional: started only if Termux + `pulseaudio` exist, otherwise the desktop runs **without sound** |
+| `am start` / lock target | `com.termux.x11` | `com.xiaoian.app` (`APP_PACKAGE`) |
+| `TERMUX_UID` | Fallback `10422` | Empty when Termux is missing (only used for PulseAudio) |
+
+Still open for XFCE: sound without Termux (see [09 R12](09-risks-and-mitigations.md#r12-sound-without-termux)).
+
+The sections below are the original plan. For XFCE they have been superseded by the table above; they still apply to KDE.
+
 ## Change Summary
 
 | Area | Change | Impact |

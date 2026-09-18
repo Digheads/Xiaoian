@@ -40,6 +40,18 @@ Install Xiaoian → Open → Tap "Install" → Tap "Start" → Desktop appears
 4. **Offline-first** — after initial setup, everything works without internet
 5. **Single APK** — no external app dependencies
 
+## Status (2026-09-18)
+
+The rollout order changed: the **X11 renderer and X server were pulled into Phase 1**. The app runs the scripts with plain `su -c`, outside any Termux environment, so a Termux-installed `termux-x11` server had nothing to connect to. The Termux:X11 frontend now lives in the `lorie` module, and the X server is started from the APK itself (`app_process … com.termux.x11.CmdEntryPoint`).
+
+| Area | State |
+|---|---|
+| XFCE / X11 | Runs without Termux (script 1.6.0): own `$TMPDIR`, app-side downloader, busybox tar fallback. Only **sound** still needs Termux PulseAudio |
+| KDE / Wayland | Unchanged — still depends on Termux (`anland` daemon, wget, tar) |
+| Scripts | `app/src/main/assets/` = app variants; repo root = standalone Termux **reference** scripts (not modified) |
+
+Details: [02-phases.md](02-phases.md#phase-1-smart-wrapper-4-weeks), [05-display-renderers.md](05-display-renderers.md#x11-renderer-termuxx11-fork), [08-shell-script-changes.md](08-shell-script-changes.md#implemented-xfce-script-160), [09-risks-and-mitigations.md](09-risks-and-mitigations.md#r10-termux-packages-have-a-hardcoded-prefix).
+
 ## License
 
 The final app will be **GPL-3.0** (required by Termux GPL-3.0 and Termux:X11 GPL-2.0 code usage).

@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import com.xiaoian.app.service.SessionManager
 import com.xiaoian.app.service.SessionState
+import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.XiaoianService
 import kotlinx.coroutines.flow.StateFlow
 
@@ -16,6 +17,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     // Let's create a singleton provider for SessionManager for Phase 1.
     
     val sessionState: StateFlow<SessionState> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.state
+    val setupProgress: StateFlow<SetupProgress> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.setup
 
     fun startSession(mode: String, de: String) {
         val intent = Intent(getApplication(), XiaoianService::class.java).apply {

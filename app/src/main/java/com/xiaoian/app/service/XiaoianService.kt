@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -37,6 +38,8 @@ class XiaoianService : LifecycleService() {
     val sessionManager = SessionManagerProvider.sessionManager
     private val shellExecutor = ShellExecutor()
     private val scriptParser = ScriptOutputParser()
+    private val setupTracker = SetupProgressTracker()
+    @Volatile private var lastProgressNotification = 0L
 
     private var currentMode: String = "extend"
     private var currentDE: String = "kde"
@@ -75,26 +78,25 @@ class XiaoianService : LifecycleService() {
                 // Extract script from assets to /data/local/tmp to avoid SELinux/noexec issues
                 val scriptPath = "/data/local/tmp/$scriptName"
                 val scriptFile = File(externalCacheDir, scriptName) // temporary staging in externalCacheDir so root can read it
-                
-                if (!scriptFile.exists() || scriptFile.length() == 0L) {
-                    assets.open(scriptName).use { input ->
-                        scriptFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
+
+                // Copied on every start: a copy left over from an older app
+                // version must never shadow the script bundled in this APK.
+                assets.open(scriptName).use { input ->
+                    scriptFile.outputStream().use { output ->
+                        input.copyTo(output)
                     }
-                    // Move to /data/local/tmp and make executable using root
-                    shellExecutor.run("cp ${scriptFile.absolutePath} $scriptPath")
-                    shellExecutor.run("chmod +x $scriptPath")
                 }
+                // Move to /data/local/tmp and make executable using root
+                shellExecutor.run("cp ${scriptFile.absolutePath} $scriptPath")
+                shellExecutor.run("chmod +x $scriptPath")
                 
+                setupTracker.reset()
+                sessionManager.updateSetup(setupTracker.progress)
+                lastProgressNotification = 0L
                 val result = shellExecutor.run(
                     command = "$scriptPath -s --$mode"
                 ) { line ->
-                    val msg = scriptParser.parse(line)
-                    if (msg is ScriptMessage.Progress) {
-                        sessionManager.updateState(SessionState.Installing(msg.step))
-                        updateNotification(msg.step)
-                    }
+                    onScriptMessage(scriptParser.parse(line))
                 }
 
                 if (result.success) {
@@ -110,6 +112,22 @@ class XiaoianService : LifecycleService() {
                 sessionManager.updateState(SessionState.Error(e.message ?: "Unknown error"))
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
+        }
+    }
+
+    /** Called on the shell reader thread for every line of the start script. */
+    private fun onScriptMessage(msg: ScriptMessage) {
+        val now = SystemClock.elapsedRealtime()
+        if (!setupTracker.onMessage(msg, now)) return
+        val progress = setupTracker.progress
+        sessionManager.updateSetup(progress)
+
+        // Android drops notification updates beyond a few per second; step
+        // changes always go through, byte/apt progress at most once a second.
+        val stepChanged = msg is ScriptMessage.StepStarted || msg is ScriptMessage.StepDone
+        if (stepChanged || now - lastProgressNotification >= 1000) {
+            lastProgressNotification = now
+            updateNotification(progress.current?.title ?: "Starting session...", progress)
         }
     }
 
@@ -186,13 +204,19 @@ class XiaoianService : LifecycleService() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(text: String, setup: SetupProgress? = null): Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.sym_def_app_icon) // TODO: create a proper icon
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Xiaoian — $currentDE ($currentMode)")
             .setContentText(text)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+
+        if (setup != null) {
+            val fraction = setup.fraction
+            builder.setProgress(100, ((fraction ?: 0f) * 100).toInt(), fraction == null)
+        }
 
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
@@ -221,8 +245,8 @@ class XiaoianService : LifecycleService() {
         return builder.build()
     }
 
-    private fun updateNotification(text: String) {
+    private fun updateNotification(text: String, setup: SetupProgress? = null) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ID, buildNotification(text))
+        nm.notify(NOTIFICATION_ID, buildNotification(text, setup))
     }
 }

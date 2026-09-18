@@ -28,6 +28,8 @@ Phase 1          Phase 2              Phase 3              Phase 3b
 
 **Why start here:** Delivers immediate user value with minimal risk. Validates the UI/UX before deeper integration.
 
+> **Deviation (implemented):** The X11 part of Phase 2 moved into Phase 1. The app starts the scripts with `su -c`, which has no Termux environment, so the script had no Termux-side `termux-x11` server to talk to. The Termux:X11 frontend is embedded (`lorie` module, prebuilt `libXlorie.so`), and the X server runs from the APK via `app_process`. The XFCE script was then made Termux-independent except for sound — see [08-shell-script-changes.md](08-shell-script-changes.md#implemented-xfce-script-160).
+
 ### Week 1: Project Setup & Core Service
 
 | Task | Details |
@@ -69,7 +71,8 @@ Phase 1          Phase 2              Phase 3              Phase 3b
 - APK that can start/stop/lock the desktop via a GUI
 - Persistent notification with action buttons
 - Log viewer
-- Still requires: Termux, Anland.Termux (for KDE), Termux:X11 (for XFCE)
+- ~~Still requires: Termux, Anland.Termux (for KDE), Termux:X11 (for XFCE)~~
+- **As built:** XFCE needs no other app (Termux optional, only for sound); KDE still needs Termux + Anland.Termux
 
 ---
 
