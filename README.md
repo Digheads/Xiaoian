@@ -630,6 +630,6 @@ dpkg -r anland
 
 ## License
 
-MIT License — Copyright (c) 2026 Digheads
+GPLv3 License — Copyright (c) 2026 Digheads
 
 See the full license in the [LICENSE](LICENSE) file.
