@@ -295,6 +295,9 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
       - name: Build release APK
+        # The Gradle build lives under src/; the repository root holds the
+        # standalone scripts, the plan and platform-tools.
+        working-directory: src
         run: ./gradlew assembleBundledRelease
       - name: Upload APK
         uses: actions/upload-artifact@v4
