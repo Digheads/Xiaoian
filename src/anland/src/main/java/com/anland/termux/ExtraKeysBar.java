@@ -533,6 +533,49 @@ public class ExtraKeysBar extends GridLayout {
         });
     }
 
+    /**
+     * True if the named modifier ("CTRL", "ALT" or "SHIFT") is currently held.
+     *
+     * {@link Sender} only ever sees down/up pairs, so a consumer that is asked
+     * "is control down right now?" out of band -- which is exactly what
+     * TerminalViewClient.readControlKey() is, when a character arrives from the
+     * soft keyboard -- cannot answer from the bridge alone. Hence this.
+     *
+     * Falls back to matching by scancode so a relabelled key in a custom layout
+     * still counts: the name is the label, and the user owns the labels.
+     */
+    public boolean isModifierActive(String name) {
+        ModState state = mModifiers.get(name);
+        if (state == null) state = findByCanonicalCode(name);
+        return state != null && state.active;
+    }
+
+    /**
+     * Release every modifier that is active but not locked, exactly as sending a
+     * key through the bar would. A consumer that answered
+     * {@link #isModifierActive} and then applied the modifier itself calls this
+     * to finish the cycle -- otherwise a tapped (not long-pressed) CTRL would
+     * stay lit forever.
+     */
+    public void consumeUnlockedModifiers() {
+        for (ModState m : mModifiers.values())
+            if (m.active && !m.locked)
+                setModifierActive(m, false);
+    }
+
+    private ModState findByCanonicalCode(String name) {
+        int code;
+        switch (name) {
+            case "CTRL":  code = EV_LEFTCTRL; break;
+            case "ALT":   code = EV_LEFTALT; break;
+            case "SHIFT": code = EV_LEFTSHIFT; break;
+            default: return null;
+        }
+        for (ModState m : mModifiers.values())
+            if (m.evdev == code) return m;
+        return null;
+    }
+
     /** Release any held modifiers (e.g. when the bar is hidden). */
     public void reset() {
         stopScheduled();

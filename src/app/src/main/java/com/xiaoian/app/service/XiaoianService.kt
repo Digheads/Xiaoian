@@ -15,6 +15,10 @@ import androidx.lifecycle.lifecycleScope
 import com.xiaoian.app.MainActivity
 import com.xiaoian.app.R
 import com.xiaoian.app.shell.ScriptMessage
+import com.xiaoian.app.terminal.SessionSpec
+import com.xiaoian.app.terminal.TerminalActivity
+import com.xiaoian.app.terminal.TerminalSessions
+import com.xiaoian.app.shell.RootShell
 import com.xiaoian.app.shell.ScriptOutputParser
 import com.xiaoian.app.shell.ShellExecutor
 import kotlinx.coroutines.Job
@@ -77,11 +81,11 @@ class XiaoianService : LifecycleService() {
 
         lifecycleScope.launch {
             try {
-                val scriptName = if (de == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
+                val scriptName = ScriptEnv.scriptName(de)
                 
                 // Extract script from assets to INFRA_ROOT to avoid SELinux/noexec issues and allow clean uninstalls
-                val infraRoot = if (de == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
-                val scriptPath = "$infraRoot/$scriptName"
+                val infraRoot = ScriptEnv.infraRoot(de)
+                val scriptPath = ScriptEnv.scriptPath(de)
                 val scriptFile = File(externalCacheDir, scriptName) // temporary staging in externalCacheDir so root can read it
 
                 // Copied on every start: a copy left over from an older app
@@ -92,8 +96,10 @@ class XiaoianService : LifecycleService() {
                     }
                 }
                 
-                // Move to INFRA_ROOT and make executable using root
-                shellExecutor.run("su -c 'mkdir -p $infraRoot && cp ${scriptFile.absolutePath} $scriptPath && chmod +x $scriptPath'")
+                // Move to INFRA_ROOT and make executable using root. No `su -c`
+                // wrapper: ShellExecutor already runs inside an open root shell,
+                // and nesting one here would cost a second Magisk prompt.
+                shellExecutor.run("mkdir -p $infraRoot && cp ${scriptFile.absolutePath} $scriptPath && chmod +x $scriptPath")
                 
                 // The scripts write their downloaded assets here too, as root.
                 // The app has to create it first so it stays owned by the app
@@ -149,9 +155,24 @@ class XiaoianService : LifecycleService() {
 
                 // The script starts and supervises the display daemon itself --
                 // it already has the socket-wait and teardown logic.
-                val command = "su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -s --$mode'"
-                val result = shellExecutor.run(command = command) { line ->
-                    onScriptMessage(scriptParser.parse(line))
+                //
+                // It runs for minutes, so it gets a root shell of its own:
+                // holding the shared one that long would block every quick
+                // query the dashboard makes meanwhile. And no idle timeout --
+                // an apt transaction can legitimately go quiet for a while.
+                val command = "${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -s --$mode"
+                val sessionShell = RootShell.dedicated("session-$de")
+                val result = try {
+                    ShellExecutor(sessionShell).run(
+                        command = command,
+                        idleTimeoutMs = RootShell.NO_TIMEOUT,
+                    ) { line ->
+                        onScriptMessage(scriptParser.parse(line))
+                    }
+                } finally {
+                    // The session wrapper is setsid'd away by the script, so
+                    // closing this shell does not touch the running desktop.
+                    sessionShell.close()
                 }
 
                 if (result.success) {
@@ -213,10 +234,24 @@ class XiaoianService : LifecycleService() {
             audioPlayerJob?.cancel()
             audioPlayer?.stop()
             
-            val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
-            val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
-            val scriptPath = "$infraRoot/$scriptName"
-            shellExecutor.run("su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -t'")
+            // Any terminal in this desktop's chroot has to go first. Its
+            // processes are chroot processes like any other, so the script's
+            // unmount_all() would find the mounts still busy, report
+            // "[!] WARNING: mount(s) still present" and fail the stop.
+            TerminalSessions.closeAllFor(this@XiaoianService, currentDE)
+
+            val scriptPath = ScriptEnv.scriptPath(currentDE)
+            // Teardown kills chroot processes and unmounts; it can sit quiet
+            // for a while, so it gets its own shell and no idle timeout.
+            val stopShell = RootShell.dedicated("stop-$currentDE")
+            try {
+                ShellExecutor(stopShell).run(
+                    "${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -t",
+                    idleTimeoutMs = RootShell.NO_TIMEOUT,
+                )
+            } finally {
+                stopShell.close()
+            }
 
             closeFrontend()
 
@@ -228,10 +263,8 @@ class XiaoianService : LifecycleService() {
 
     private fun lockPhone() {
         lifecycleScope.launch {
-            val scriptName = if (currentDE == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
-            val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
-            val scriptPath = "$infraRoot/$scriptName"
-            shellExecutor.run("su -c '${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -k'")
+            val scriptPath = ScriptEnv.scriptPath(currentDE)
+            shellExecutor.run("${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -k")
             sessionManager.updateState(SessionState.Running(currentMode, currentDE, true))
             updateNotification("Session running (Phone Locked)")
         }
@@ -243,18 +276,25 @@ class XiaoianService : LifecycleService() {
         // If we want a button, we can send a broadcast or kill the watcher.
     }
 
+    /** The notification's terminal action: a shell in the running desktop's chroot. */
     private fun openTerminal() {
-        // Launch TerminalActivity
+        val intent = TerminalActivity
+            .intent(this, SessionSpec.DesktopChroot(currentDE))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
     /**
      * Closes whichever desktop frontend is on screen.
      *
-     * Both live in this process: Termux:X11 listens for its own broadcast,
-     * Anland only keeps a static reference to its activity. Called for every
-     * way a session can end -- the Stop button, a logout from inside the
-     * desktop, a crash -- because otherwise a dead surface stays on the
-     * external display with no way to dismiss it.
+     * Called for every way a session can end -- the Stop button, a logout from
+     * inside the desktop, a crash -- because otherwise a dead surface stays on
+     * the external display with no way to dismiss it.
+     *
+     * Termux:X11 is closed through its own ACTION_STOP broadcast (which
+     * `LorieApp` turns into `finishAndRemoveTask`); Anland has no such
+     * receiver, so its activity is finished directly through the static
+     * reference it keeps.
      */
     private fun closeFrontend() {
         runCatching {
@@ -273,11 +313,17 @@ class XiaoianService : LifecycleService() {
     private fun startSessionWatchdog() {
         watchdogJob?.cancel()
         watchdogJob = lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val infraRoot = if (currentDE == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
-            val script = "while true; do if [ ! -f $infraRoot/state ]; then exit 1; fi; PID=\$(cat $infraRoot/state | awk '{print \$1}'); if [ ! -d \"/proc/\$PID\" ]; then exit 1; fi; sleep 5; done"
+            val stateFile = "${ScriptEnv.infraRoot(currentDE)}/state"
+            // One cheap check every five seconds on the shared root shell. This
+            // used to be a `while true` loop inside a root shell of its own --
+            // a whole extra Magisk prompt just to watch a file.
+            val alive = "p=\$(awk '{print \$1}' $stateFile 2>/dev/null); " +
+                "[ -n \"\$p\" ] && [ -d \"/proc/\$p\" ]"
             try {
-                val process = ProcessBuilder("su", "-c", script).start()
-                process.waitFor() // Blocks until the bash script exits (when the session dies)
+                while (isActive) {
+                    kotlinx.coroutines.delay(5_000)
+                    if (!shellExecutor.run(alive).success) break
+                }
                 
                 // Once the process exits, it means the session is dead
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -287,6 +333,11 @@ class XiaoianService : LifecycleService() {
                     audioPlayer?.stop()
                     audioPlayer = null
                     closeFrontend()
+                    // The desktop's own teardown already killed everything in
+                    // its chroot, terminals included, so this is bookkeeping
+                    // rather than prevention -- but without it the store would
+                    // keep listing sessions whose shells are long gone.
+                    TerminalSessions.closeAllFor(this@XiaoianService, currentDE)
                     sessionManager.updateState(SessionState.Idle)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
@@ -341,8 +392,14 @@ class XiaoianService : LifecycleService() {
             builder.addAction(0, if (isLocked) "Unlock" else "Lock", lockPending)
         }
         
+        // Each frontend has its own settings screen. This was hard-coded to
+        // the X11 one, so a KDE session opened Termux:X11's preferences.
+        val prefsActivity = if (currentDE == "kde")
+            "com.anland.termux.SettingsActivity"
+        else
+            "com.termux.x11.LoriePreferences"
         val prefsIntent = Intent().apply {
-            setClassName(this@XiaoianService, "com.termux.x11.LoriePreferences")
+            setClassName(this@XiaoianService, prefsActivity)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         val prefsPending = PendingIntent.getActivity(this, 3, prefsIntent, PendingIntent.FLAG_IMMUTABLE)

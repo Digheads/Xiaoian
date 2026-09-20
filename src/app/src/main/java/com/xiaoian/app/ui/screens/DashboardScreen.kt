@@ -16,10 +16,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
+import com.xiaoian.app.terminal.SessionSpec
 import com.xiaoian.app.ui.components.AppLogo
 
 @Composable
-fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel: DashboardViewModel = viewModel(), onOpenTerminal: () -> Unit = {}) {
+fun DashboardScreen(
+    innerPadding: PaddingValues = PaddingValues(0.dp),
+    viewModel: DashboardViewModel = viewModel(),
+    onOpenTerminal: (SessionSpec?) -> Unit = {},
+) {
     val state by viewModel.sessionState.collectAsState()
     val setup by viewModel.setupProgress.collectAsState()
     val xfceStorage by viewModel.xfceStorage.collectAsState()
@@ -84,21 +89,23 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
                 Text("START DESKTOP")
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // A shell in the tool rootfs, which needs no desktop session at
-            // all -- the only thing on the dashboard that works on its own.
-            OutlinedButton(
-                onClick = onOpenTerminal,
-                modifier = Modifier.fillMaxWidth().height(56.dp)
-            ) {
-                Text("START TERMINAL")
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
+
+        // Outside the Idle block on purpose: a terminal needs no desktop
+        // session, and hiding it while one runs took away the only shell just
+        // when it is most useful. Opened with no environment, so the terminal
+        // screen asks which one -- or goes straight back to what is open.
+        OutlinedButton(
+            onClick = { onOpenTerminal(null) },
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text("TERMINAL")
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Environments Section Header
         Row(
@@ -151,8 +158,15 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
         }
         
         val context = androidx.compose.ui.platform.LocalContext.current
-        val openDesktop = {
-            val intent = android.content.Intent(context, com.termux.x11.MainActivity::class.java)
+        // Each desktop has its own Android frontend. One shared lambda used to
+        // send both cards to the X11 window, so the KDE card opened an empty
+        // Termux:X11 surface instead of the Wayland one.
+        val openDesktop = { deId: String ->
+            val target = if (deId == "kde")
+                com.anland.termux.MainActivity::class.java
+            else
+                com.termux.x11.MainActivity::class.java
+            val intent = android.content.Intent(context, target)
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }
@@ -168,9 +182,9 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
             setupProgress = setup,
             uninstallInProgress = uninstallState.inProgress,
             onUninstall = { showUninstallDialog = "xfce" },
-            onOpenDesktop = openDesktop,
+            onOpenDesktop = { openDesktop("xfce") },
+            onLockPhone = { viewModel.lockPhone() },
             onStopSession = { viewModel.stopSession() },
-            onOpenTerminal = onOpenTerminal
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -186,9 +200,9 @@ fun DashboardScreen(innerPadding: PaddingValues = PaddingValues(0.dp), viewModel
             setupProgress = setup,
             uninstallInProgress = uninstallState.inProgress,
             onUninstall = { showUninstallDialog = "kde" },
-            onOpenDesktop = openDesktop,
+            onOpenDesktop = { openDesktop("kde") },
+            onLockPhone = { viewModel.lockPhone() },
             onStopSession = { viewModel.stopSession() },
-            onOpenTerminal = onOpenTerminal
         )
     }
 
@@ -235,8 +249,8 @@ fun InstalledEnvironmentCard(
     uninstallInProgress: Boolean,
     onUninstall: () -> Unit,
     onOpenDesktop: () -> Unit,
+    onLockPhone: () -> Unit,
     onStopSession: () -> Unit,
-    onOpenTerminal: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -299,6 +313,9 @@ fun InstalledEnvironmentCard(
                 else -> false
             }
 
+            // No TERMINAL button here. The one above the cards opens the
+            // terminal screen, and the environment is chosen there -- having
+            // both meant three buttons that led to the same place.
             if (isActiveDE) {
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
@@ -319,15 +336,29 @@ fun InstalledEnvironmentCard(
 
                         
                         Spacer(modifier = Modifier.height(16.dp))
+
+                        // Three equal buttons in one row already did not fit on
+                        // a phone, and LOCK makes four. The primary action gets
+                        // the full width; the rest share the row below it.
+                        Button(
+                            onClick = onOpenDesktop,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("OPEN DESKTOP")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onOpenDesktop, modifier = Modifier.weight(1f)) {
-                                Text("OPEN DESKTOP")
-                            }
-                            Button(onClick = onOpenTerminal, modifier = Modifier.weight(1f)) {
-                                Text("TERMINAL")
+                            // Locking the phone only means anything while the
+                            // desktop lives on another display.
+                            if (sessionState.mode != "local") {
+                                OutlinedButton(onClick = onLockPhone, modifier = Modifier.weight(1f)) {
+                                    Text("LOCK")
+                                }
                             }
                             Button(
-                                onClick = onStopSession, 
+                                onClick = onStopSession,
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                                 modifier = Modifier.weight(1f)
                             ) {

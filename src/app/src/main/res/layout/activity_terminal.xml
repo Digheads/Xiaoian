@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The terminal screen. The rest of the app is Compose; this one is not, because
+  com.termux.view.TerminalView is a View with its own renderer, input handling
+  and text selection, and wrapping it in AndroidView would buy nothing.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/terminal_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FF000000">
+
+    <HorizontalScrollView
+        android:id="@+id/tab_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FF101010"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/tabs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <com.termux.view.TerminalView
+        android:id="@+id/terminal_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:scrollbars="vertical" />
+
+    <FrameLayout
+        android:id="@+id/extra_keys"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+</LinearLayout>

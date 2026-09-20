@@ -12,7 +12,7 @@ If the Anland project (`lfdevs/anland-termux`) releases a new version and you wa
 ## 2. Update the Java / Frontend Source Code
 
 1. Unzip the downloaded source code.
-2. Copy and overwrite the files in your `Xiaoian/anland/src/main/` folder using the contents from the original source code's `app/src/main/` folder. Specifically:
+2. Copy and overwrite the files in your `src/anland/src/main/` folder using the contents from the original source code's `app/src/main/` folder. Specifically:
    - `java/com/anland/termux/` folder (all Java source code)
    - `res/` folder (UI resources, icons, layouts)
    - `AndroidManifest.xml`
@@ -24,7 +24,7 @@ Since we bypass C++ compilation, we extract the native binaries directly from th
 1. Rename the downloaded `.apk` file extension to `.zip` and extract it.
 2. Navigate to the extracted folder's `lib/arm64-v8a/` directory.
 3. Copy all `.so` files found there (e.g., `libanland_consumer.so`, `libfdhelper.so`, etc.) into the following folder in the Xiaoian project (overwriting the old ones):
-   `Xiaoian/anland/src/main/jniLibs/arm64-v8a/`
+   `src/anland/src/main/jniLibs/arm64-v8a/`
 4. (Optional: If you want to support other architectures like x86_64 or armeabi-v7a, copy their respective folders into `jniLibs` as well).
 
 ### 3b. The display daemon (`libanland.so`) — do not skip this
@@ -46,7 +46,7 @@ files and `liblog`, so no CMake or Gradle NDK setup is required:
 
 ```bash
 NDK="$ANDROID_SDK_ROOT/ndk/29.0.14206865/toolchains/llvm/prebuilt/windows-x86_64/bin"
-cd anland/src/main/jni
+cd src/anland/src/main/jni
 
 "$NDK/aarch64-linux-android28-clang" -O2 -Wall -fPIE -pie     -I anland_core/common     daemon/anland.c anland_core/common/socket_utils.c     -llog -o /tmp/libanland.so
 
@@ -55,6 +55,16 @@ cd anland/src/main/jni
 
 Use the API level matching the project's `minSdk` (28). Verify with
 `file libanland.so` — it must say *ELF 64-bit … ARM aarch64 … pie executable*.
+
+> **Since this guide was written, the module got a build script.**
+> `sh src/anland/build-natives.sh` rebuilds all three natives from the in-tree
+> `src/main/jni/` sources with the right flags and API level, and then verifies
+> the JNI symbols with `llvm-nm`. Prefer it over the command above, and use it
+> whenever you change anything under `src/main/jni/` — note that the consumer
+> library must be built at **API 30**, not 28, because it calls
+> `memfd_create()`. Lifting the `.so` files out of the release APK, as steps 3
+> and 3b describe, is still the right move when you are taking a new upstream
+> release rather than changing our copy of the sources.
 
 **Why the odd name:** `/data/data` is mounted non-executable (W^X), so a binary
 there cannot be run. Android's packager extracts APK entries matching `lib*.so`

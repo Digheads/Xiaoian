@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Window and recents title of the Wayland surface. -->
+    <string name="anland_window_label">Xiaoian:Wayland</string>
+
     <string name="settings_short_label">Settings</string>
 
     <!-- Titles / section headers -->

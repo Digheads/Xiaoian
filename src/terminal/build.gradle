@@ -1,0 +1,43 @@
+apply plugin: 'com.android.library'
+
+// Vendored Termux terminal emulator and view -- see LICENSE.md (GPLv3) and
+// README.md (provenance, the two deliberate divergences from upstream).
+//
+// Upstream ships these as two modules, terminal-emulator (namespace
+// com.termux.emulator) and terminal-view (namespace com.termux.view). Here
+// they are one module, and its namespace has to be com.termux.view: with
+// android.nonTransitiveRClass=true a library's R class is <namespace>.R, and
+// the textselection classes do `import com.termux.view.R`.
+android {
+    namespace 'com.termux.view'
+    buildToolsVersion "36.0.0"
+    compileSdk 35
+
+    defaultConfig {
+        minSdkVersion 28
+        targetSdkVersion 35
+
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // libptyspawn.so is an executable named lib*.so so the packager extracts
+    // it into nativeLibraryDir with the execute bit. Same trick as :anland.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'androidx.annotation:annotation:1.9.0'
+}

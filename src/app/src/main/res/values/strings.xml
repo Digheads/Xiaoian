@@ -54,4 +54,5 @@
     <!-- Log viewer -->
     <string name="logs_title">Session Log</string>
     <string name="logs_empty">No log file found. Start a session first.</string>
+    <string name="terminal_window_label">Xiaoian:Terminal</string>
 </resources>

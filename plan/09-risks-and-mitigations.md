@@ -73,8 +73,8 @@
 | Component | License | Implication |
 |---|---|---|
 | Xiaoian shell scripts | MIT | ✅ No issue |
-| Termux `terminal-emulator` library | Apache-2.0 | ✅ No issue |
-| Termux `terminal-view` library | Apache-2.0 | ✅ No issue |
+| Termux `terminal-emulator` library | GPLv3-only | ⚠️ App becomes GPL-3.0 (see [src/terminal/LICENSE.md](../src/terminal/LICENSE.md)) |
+| Termux `terminal-view` library | GPLv3-only | ⚠️ Same |
 | Termux:X11 renderer code | GPL-2.0 | ⚠️ App becomes GPL-2.0+ |
 | Termux app bootstrap | GPL-3.0 | ⚠️ If bundled, app becomes GPL-3.0 |
 
@@ -84,7 +84,7 @@
 |---|---|
 | **M3a:** Ship as GPL-3.0, distribute via F-Droid + GitHub | F-Droid is designed for FOSS apps. GitHub releases for direct APK download. Skip Google Play entirely. |
 | **M3b:** Ship on Google Play AS GPL-3.0 | Legal. Include source code link in app description. Many apps do this. |
-| **M3c:** Avoid GPL code entirely | Write own terminal emulator (possible, Apache-2.0 libs available), own X11 renderer (significant work), don't bundle bootstrap (download at runtime). This removes the GPL requirement but adds months of work. |
+| **M3c:** ~~Avoid GPL code entirely~~ | Was: write own terminal emulator, own X11 renderer, don't bundle bootstrap. Moot — the project ships the Termux:X11 fork and the vendored Termux terminal, both GPL, and the repository is GPLv3. |
 
 **Recommendation:** M3a. F-Droid + GitHub is the natural distribution channel for this kind of power-user, root-required tool. The target audience already uses F-Droid (that's where they get Termux).
 

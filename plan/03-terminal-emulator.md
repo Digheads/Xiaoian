@@ -12,7 +12,7 @@ Termux's terminal implementation consists of two separate libraries:
 
 ### 1. `terminal-emulator` (Java library)
 - **Repo:** https://github.com/termux/termux-app/tree/master/terminal-emulator
-- **License:** Apache-2.0 ← **not GPL!** (this is important)
+- **License:** GPLv3-only — see [src/terminal/LICENSE.md](../src/terminal/LICENSE.md)
 - **What it does:** Pure Java VT100/xterm terminal state machine
   - Parses escape sequences
   - Maintains a character grid (rows × columns)
@@ -21,14 +21,22 @@ Termux's terminal implementation consists of two separate libraries:
 
 ### 2. `terminal-view` (Android View)
 - **Repo:** https://github.com/termux/termux-app/tree/master/terminal-view
-- **License:** Apache-2.0 ← **also not GPL!**
+- **License:** GPLv3-only — see [src/terminal/LICENSE.md](../src/terminal/LICENSE.md)
 - **What it does:** Android `View` subclass that renders the terminal state
   - Text rendering with Canvas
   - Touch input (scroll, select, paste)
   - Keyboard input handling
   - Cursor blinking, text selection, clipboard
 
-> **Key insight:** The terminal emulator and view libraries are Apache-2.0, NOT GPL-3.0. The GPL-3.0 license applies to the Termux app itself, not these libraries. This means you can use them without the GPL requirement (though the app will still be GPL due to Termux:X11 code).
+> **Correction (2026-09-20, when the libraries were actually vendored):** the
+> claim that these libraries are Apache-2.0 was wrong. Neither directory has a
+> `LICENSE` file and no copied source file has a licence header; the termux-app
+> root `LICENSE.md` says the repository is **GPLv3-only** and that these two
+> libraries *contain* Apache-2.0 code from Terminal Emulator for Android — which
+> is not the same as relicensing them. Treat the vendored code as GPLv3. It
+> changes nothing in practice, since the APK is already GPL because of the
+> Termux:X11 fork in `:lorie`. Full reasoning in
+> [src/terminal/LICENSE.md](../src/terminal/LICENSE.md).
 
 ## Architecture
 

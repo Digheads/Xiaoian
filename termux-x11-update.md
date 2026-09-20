@@ -12,12 +12,12 @@ If Termux:X11 releases a new version and you want to update the integration, fol
 ## 2. Update the Java / Frontend Source Code
 
 1. Unzip the downloaded source code.
-2. Copy and overwrite the files in your `Xiaoian/lorie/src/main/` folder with the contents from the downloaded source code's `app/src/main/` folder. Specifically:
+2. Copy and overwrite the files in your `src/lorie/src/main/` folder with the contents from the downloaded source code's `app/src/main/` folder. Specifically:
    - `java/com/termux/x11/` folder (all Java source code)
    - `res/` folder (all UI resources, layouts, and strings)
    - `AndroidManifest.xml`
    - Also look for and copy `templates/` or similar folders if they exist (e.g. `src/main/templates`).
-3. Update `lorie/build.gradle` using the original source code's `app/build.gradle` as a reference, but **make sure to keep our custom modifications** (see step 4).
+3. Update `src/lorie/build.gradle` using the original source code's `app/build.gradle` as a reference, but **make sure to keep our custom modifications** (see step 4).
 
 ## 3. Update the C++ Precompiled Libraries (JNI Libs)
 
@@ -25,12 +25,12 @@ Since we cannot compile the C++ code on Windows using the NDK, we extract the pr
 1. Rename the downloaded `.apk` file extension to `.zip` and extract it.
 2. Navigate to the extracted folder's `lib/arm64-v8a/` directory.
 3. Copy all `.so` files found there (e.g., `libXlorie.so`, `libdatastore_shared_counter.so`, etc.) into your Xiaoian project here:
-   `Xiaoian/lorie/src/main/jniLibs/arm64-v8a/`
+   `src/lorie/src/main/jniLibs/arm64-v8a/`
 4. (If you want to support other architectures like `armeabi-v7a` or `x86_64`, copy them into their respective folders as well).
 
 ## 4. Restore Xiaoian-Specific Modifications (CRITICAL!)
 
-We made some essential fixes to the original Termux:X11 `build.gradle` file and code, which must be reapplied to `lorie/build.gradle` after every update:
+We made some essential fixes to the original Termux:X11 `build.gradle` file and code, which must be reapplied to `src/lorie/build.gradle` after every update:
 
 ### A. Fix Gradle Tasks
 In the original Termux:X11 `build.gradle`, the `generatePrefs` and `generateShortcuts` tasks incorrectly run during the configuration phase. You must wrap their execution code inside a `doLast { ... }` block!
@@ -55,7 +55,7 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.0"
 }
 ```
-*Tip: You can safely remove the C/C++ build steps (CMake, NDK) from `lorie/build.gradle`, since we are pulling them in via jniLibs!*
+*Tip: You can safely remove the C/C++ build steps (CMake, NDK) from `src/lorie/build.gradle`, since we are pulling them in via jniLibs!*
 
 ### C. Load `libXlorie.so` from the extracted library directory (CRITICAL)
 

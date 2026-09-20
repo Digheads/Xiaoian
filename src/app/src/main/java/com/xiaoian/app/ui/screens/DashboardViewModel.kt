@@ -9,6 +9,7 @@ import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
 import com.xiaoian.app.service.XiaoianService
+import com.xiaoian.app.shell.RootShell
 import com.xiaoian.app.shell.ShellExecutor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,6 +67,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         getApplication<Application>().startService(intent)
     }
 
+    /**
+     * Blanks and locks the phone's own screen while the desktop keeps running
+     * on the external display (the scripts' `-k`). Meaningless in local mode,
+     * where the desktop *is* the phone screen.
+     */
+    fun lockPhone() {
+        val intent = Intent(getApplication(), XiaoianService::class.java).apply {
+            action = XiaoianService.ACTION_LOCK
+        }
+        getApplication<Application>().startService(intent)
+    }
+
     fun refreshStorage() {
         viewModelScope.launch {
             _storageLoading.value = true
@@ -77,11 +90,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun uninstall(de: String) {
         viewModelScope.launch {
-            val scriptName = if (de == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
-            val infraRoot = if (de == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
-            val scriptPath = "$infraRoot/$scriptName"
+            val scriptName = com.xiaoian.app.service.ScriptEnv.scriptName(de)
+            val infraRoot = com.xiaoian.app.service.ScriptEnv.infraRoot(de)
+            val scriptPath = com.xiaoian.app.service.ScriptEnv.scriptPath(de)
 
             _uninstallState.value = UninstallState(inProgress = true, de = de, output = "Removing...")
+
+            // Same reason as stopping a session, with a sharper edge: the
+            // script's do_uninstall ends in `rm -rf`, and an open chroot shell
+            // keeps a lazily-unmounted /dev alive for it to walk into and
+            // delete the host's device nodes.
+            com.xiaoian.app.terminal.TerminalSessions.closeAllFor(getApplication(), de)
 
             // Extract the script first (same logic as XiaoianService)
             try {
@@ -102,8 +121,19 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             val env = com.xiaoian.app.service.ScriptEnv.prefix(getApplication())
-            val result = shellExecutor.run("$env $scriptPath -u") { line ->
-                _uninstallState.value = _uninstallState.value.copy(output = line)
+            // Uninstall unmounts and then deletes a multi-gigabyte chroot: it
+            // runs long and goes quiet, so it gets a root shell of its own
+            // rather than holding the shared one the dashboard is polling.
+            val uninstallShell = RootShell.dedicated("uninstall-$de")
+            val result = try {
+                ShellExecutor(uninstallShell).run(
+                    "$env $scriptPath -u",
+                    idleTimeoutMs = RootShell.NO_TIMEOUT,
+                ) { line ->
+                    _uninstallState.value = _uninstallState.value.copy(output = line)
+                }
+            } finally {
+                uninstallShell.close()
             }
 
             if (result.success) {

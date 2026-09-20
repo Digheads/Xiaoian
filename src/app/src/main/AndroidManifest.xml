@@ -31,6 +31,21 @@
             </intent-filter>
         </activity>
 
+        <!--
+            The terminal. singleTask because sessions are process-wide: a
+            second instance would show the same shells in a second window.
+            configChanges keeps rotation from tearing the view down under a
+            live pty, and adjustResize plus the inset listener in the Activity
+            keep the key bar above the IME.
+        -->
+        <activity
+            android:name=".terminal.TerminalActivity"
+            android:exported="false"
+            android:label="@string/terminal_window_label"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Foreground service -->
         <service
             android:name=".service.XiaoianService"

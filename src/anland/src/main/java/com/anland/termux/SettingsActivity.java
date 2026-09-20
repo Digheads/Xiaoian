@@ -515,7 +515,7 @@ public class SettingsActivity extends Activity {
         notificationSwitch.setText(R.string.notification_switch);
         notificationSwitch.setTextSize(14);
         notificationSwitch.setPadding(0, dp(8), 0, 0);
-        notificationSwitch.setChecked(prefs.getBoolean(KEY_NOTIFICATION_ENABLED, true));
+        notificationSwitch.setChecked(prefs.getBoolean(KEY_NOTIFICATION_ENABLED, false));
         notificationSwitch.setOnCheckedChangeListener((v, checked) ->
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putBoolean(KEY_NOTIFICATION_ENABLED, checked).apply());

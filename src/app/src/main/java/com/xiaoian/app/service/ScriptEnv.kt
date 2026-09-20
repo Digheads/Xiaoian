@@ -46,4 +46,19 @@ object ScriptEnv {
         "ANLAND_BIN=${anlandBin(context)} " +
             "XIAOIAN_LIB_DIR=${libDir(context)} " +
             "XIAOIAN_ROOTFS_TARBALL=${rootfsTarball(context)}"
+
+    /**
+     * Where a desktop's script and chroot live. The same `if (de == "kde")`
+     * ternary used to sit at five call sites, which is how two of them end up
+     * disagreeing.
+     */
+    fun infraRoot(de: String): String =
+        if (de == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
+
+    /** File name of the desktop's start script, as bundled in the APK assets. */
+    fun scriptName(de: String): String =
+        if (de == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
+
+    /** Absolute path the script is installed to and run from. */
+    fun scriptPath(de: String): String = "${infraRoot(de)}/${scriptName(de)}"
 }

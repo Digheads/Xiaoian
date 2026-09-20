@@ -153,8 +153,13 @@ public class LorieApp extends Application {
                 break;
             }
             case MainActivity.ACTION_STOP:
+                // finishAndRemoveTask, not finishAffinity: this activity lives
+                // in a task of its own (taskAffinity + singleInstance), and
+                // finishAffinity left that task sitting in recents, so the
+                // window stayed behind after the session had already stopped
+                // and had to be swiped away by hand.
                 if (activity != null)
-                    activity.finishAffinity();
+                    activity.finishAndRemoveTask();
                 break;
             case ACTION_PREFERENCES_CHANGED:
                 if (activity != null)

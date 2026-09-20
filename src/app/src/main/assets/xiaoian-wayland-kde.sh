@@ -467,45 +467,35 @@ http_cat() {
     return 1
 }
 
-# Prints a tar command that can extract .tar.xz, from the busybox that
-# the root solution ships.
-find_xz_tar() {
-    local b
-    for b in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
-        [ -x "$b" ] || continue
-        "$b" tar --help 2>&1 | grep -q -- '-J' && { echo "$b tar"; return 0; }
-    done
-    return 1
-}
-
 # Usage: extract_txz <tarball> <destination dir> <progress id>
-# The app's Cat tool feeds the tarball into tar, so the side that reads the
-# host path is a process that can actually see it. Cat reports the bytes read
-# on fd 3 (the script's stdout); the compressed size is the known total, so
-# the app gets a real percentage without a second xz pass.
+# The app's Cat tool decompresses the xz stream and feeds plain tar into
+# Android's own tar. Nothing outside the APK is involved, on purpose: toybox
+# tar has no xz support, and the only xz-capable tar on a rooted phone is the
+# busybox that the root solution happens to ship. This used to look for it at
+# /data/adb/magisk, /data/adb/ksu and /data/adb/ap -- three hard-coded paths
+# that make the script care which root solution is installed, and that the
+# next one would defeat. The app carries its own XZ decoder anyway, for the
+# tool rootfs.
+# Cat reports the bytes read on fd 3 (the script's stdout); the compressed
+# size is the known total, so the app gets a real percentage without a second
+# xz pass.
 extract_txz() {
-    local f="$1" dest="$2" pid="$3" tarcmd apk rc
-    tarcmd=$(find_xz_tar) || {
-        echo "[!] ERROR: No tar with xz support found (Magisk/KernelSU/APatch busybox)."
-        return 1
-    }
-    echo "[*] Extractor: $tarcmd"
+    local f="$1" dest="$2" pid="$3" apk rc
     echo "[*] Source:    $f ($(du -h "$f" 2>/dev/null | cut -f1))"
     echo "[*] Target:    $dest ($(df -h "$dest" 2>/dev/null | tail -1 | awk '{print $4}') free)"
 
     apk=$(app_apk_path)
     if [ -z "$apk" ]; then
-        echo "[!] WARNING: APK path unknown; extracting without progress reporting."
-        $tarcmd -xJf "$f" -C "$dest"
-        return
+        echo "[!] ERROR: cannot locate the $ANLAND_APP_PACKAGE APK, so the"
+        echo "[!]        xz archive cannot be decompressed."
+        return 1
     fi
     { CLASSPATH="$apk" XIAOIAN_PROGRESS_ID="$pid" \
-        app_process /system/bin com.xiaoian.app.tools.Cat "$f" 2>&3 \
-        | $tarcmd -xJf - -C "$dest"; } 3>&1
+        app_process /system/bin com.xiaoian.app.tools.Cat --xz "$f" 2>&3 \
+        | tar -xf - -C "$dest"; } 3>&1
     rc=$?
     if [ "$rc" != "0" ]; then
         echo "[!] ERROR: the extraction pipeline exited with status $rc."
-        echo "[!]   tar:  $tarcmd"
         echo "[!]   into: $dest"
         df -h "$dest" 2>&1 | sed 's/^/[!]   /'
     fi

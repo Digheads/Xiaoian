@@ -99,6 +99,11 @@ public class MainActivity extends Activity
     private static final String KEY_KEYBOARD_FLOATING = "keyboard_floating";
     private boolean mKeyboardFloating = true;
     // Persistent "tap to open Settings" notification, toggleable in Settings > General.
+    // Off by default: Xiaoian's own foreground service already posts the
+    // session card (Stop / Lock / Preferences) for both desktops. With this on
+    // the KDE session showed two ongoing notifications and the XFCE one showed
+    // one, since Termux:X11's equivalent is disabled upstream. Still available
+    // from Settings for the configurable tap and button actions.
     private static final String KEY_NOTIFICATION_ENABLED = "settings_notification";
     private static final String KEY_SCREEN_ORIENTATION = "screen_orientation";
     private static final String[] SCREEN_ORIENTATIONS = {
@@ -691,7 +696,7 @@ public class MainActivity extends Activity
 
         // Show settings notification while in foreground, unless disabled in Settings.
         if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getBoolean(KEY_NOTIFICATION_ENABLED, true)) {
+                .getBoolean(KEY_NOTIFICATION_ENABLED, false)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                     && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                             != PackageManager.PERMISSION_GRANTED) {
@@ -997,7 +1002,7 @@ public class MainActivity extends Activity
             }
         } else if (requestCode == 1003) {
             if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .getBoolean(KEY_NOTIFICATION_ENABLED, true)) {
+                    .getBoolean(KEY_NOTIFICATION_ENABLED, false)) {
                 showSettingsNotification();
             }
         }

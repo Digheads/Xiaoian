@@ -123,6 +123,45 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
         });
     }
 
+    /**
+     * Keeps the preference list clear of the ActionBar.
+     *
+     * Android 15 enforces edge-to-edge for targetSdk 35. AppCompat then pushes
+     * the ActionBar down by the status bar inset but still lays the content
+     * frame out from the top of the window, so the bar ends up covering the
+     * first preference row -- measured here as bar bottom 248 against content
+     * top 154, i.e. exactly the 94px status bar.
+     *
+     * The overlap is measured rather than assumed: on a platform version that
+     * places the content correctly it comes out zero and nothing is padded.
+     */
+    private void keepContentBelowActionBar() {
+        final View bar = findViewById(androidx.appcompat.R.id.action_bar_container);
+        final View container = findViewById(R.id.prefs_container);
+        if (bar == null || container == null)
+            return;
+
+        // A layout listener on the container alone fires once, before the
+        // ActionBar has been positioned, and never again -- padding a view
+        // does not change its own bounds. Watch the whole tree instead.
+        container.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            if (bar.getHeight() == 0)
+                return;
+
+            int[] barPos = new int[2];
+            int[] containerPos = new int[2];
+            bar.getLocationOnScreen(barPos);
+            container.getLocationOnScreen(containerPos);
+
+            int overlap = Math.max(0, (barPos[1] + bar.getHeight()) - containerPos[1]);
+            if (container.getPaddingTop() != overlap) {
+                Log.d("LoriePreferences", "ActionBar overlaps content by " + overlap + "px, padding it away");
+                container.setPadding(container.getPaddingLeft(), overlap,
+                        container.getPaddingRight(), container.getPaddingBottom());
+            }
+        });
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         prefs = ((LorieApp) getApplication()).getPrefs(this);
@@ -135,6 +174,8 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
             actionBar.setDisplayHomeAsUpEnabled(true);
             actionBar.setHomeButtonEnabled(true);
         }
+
+        keepContentBelowActionBar();
 
         Uri ENABLED_ACCESSIBILITY_SERVICES = Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         Uri ACCESSIBILITY_ENABLED = Settings.Secure.getUriFor(Settings.Secure.ACCESSIBILITY_ENABLED);

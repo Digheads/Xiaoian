@@ -47,8 +47,7 @@ dependencies {
 
 | Library | Source | License | Usage |
 |---|---|---|---|
-| `terminal-emulator` | [termux/termux-app](https://github.com/termux/termux-app/tree/master/terminal-emulator) | Apache-2.0 | Terminal state machine |
-| `terminal-view` | [termux/termux-app](https://github.com/termux/termux-app/tree/master/terminal-view) | Apache-2.0 | Terminal rendering View |
+| `terminal` (both, merged) | [termux/termux-app](https://github.com/termux/termux-app) `terminal-emulator` + `terminal-view` | GPLv3-only | Terminal state machine + rendering View |
 | X11 renderer | [termux/termux-x11](https://github.com/termux/termux-x11) (subset) | GPL-2.0 | X11 framebuffer rendering |
 | Anland renderer | [lfdevs/anland-termux](https://github.com/lfdevs/anland-termux) (subset) | TBD | Wayland frame rendering |
 
@@ -138,11 +137,8 @@ Xiaoian/
 │   │
 │   └── build.gradle.kts
 │
-├── terminal-emulator/                      ← Forked library module
-│   └── (Apache-2.0 Termux terminal library)
-│
-├── terminal-view/                          ← Forked library module
-│   └── (Apache-2.0 Termux terminal View)
+├── terminal/                               ← Vendored library module
+│   └── (GPLv3 Termux terminal emulator + View, merged)
 │
 ├── scripts/                                ← Shell scripts (moved here)
 │   ├── xiaoian-wayland-kde.sh

@@ -2,6 +2,7 @@ package com.xiaoian.app.service
 
 import android.content.Context
 import android.util.Log
+import com.xiaoian.app.shell.RootShell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tukaani.xz.XZInputStream
@@ -111,9 +112,17 @@ class BootstrapManager(private val context: Context) {
             val prefix = prefixDir.absolutePath
 
             if (prefixDir.exists()) {
+                // A local terminal holds `--bind /dev` inside this tree. The
+                // unmount below refuses while it is busy, and toybox `rm` has
+                // no --one-file-system, so getting this wrong deletes the
+                // host's device nodes.
+                com.xiaoian.app.terminal.TerminalSessions.closeAllLocal(context)
                 onProgress("Removing old rootfs...", 0.02f)
                 Log.d(TAG, "Cleaning up old rootfs at $prefix")
-                runSuCommand("rm -rf $prefix")
+                if (!wipeRootfs(prefix)) {
+                    onProgress("ERROR: could not unmount the old rootfs", 0.02f)
+                    return@withContext false
+                }
             }
 
             onProgress("Creating rootfs directory...", 0.05f)
@@ -160,7 +169,7 @@ class BootstrapManager(private val context: Context) {
 
             onProgress("Extracting rootfs (this will take a few minutes)...", 0.58f)
             Log.i(TAG, "Extracting ${plainTarFile.absolutePath} to $prefix via su")
-            val extractResult = runSuCommand("tar -xf ${plainTarFile.absolutePath} -C $prefix")
+            val extractResult = runSuCommand("tar -xf ${plainTarFile.absolutePath} -C $prefix", RootShell.NO_TIMEOUT)
             if (!extractResult) {
                 Log.e(TAG, "tar extraction failed!")
                 onProgress("ERROR: Extraction failed!", 0.58f)
@@ -275,29 +284,73 @@ class BootstrapManager(private val context: Context) {
         }
     }
 
-    private fun runSuCommand(command: String): Boolean {
-        Log.d(TAG, "su -c: $command")
-        val pb = ProcessBuilder("su", "-c", command)
-        pb.redirectErrorStream(true)
-        val process = pb.start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        val exitCode = process.waitFor()
-        if (output.isNotBlank()) {
-            Log.d(TAG, "su output: $output")
+    /**
+     * Deletes the tool rootfs, but never through a mount.
+     *
+     * The in-app terminal bind-mounts `/dev`, `/dev/pts`, `/proc` and `/sys`
+     * into this tree. Android's toybox `rm` has no `--one-file-system`, so a
+     * plain `rm -rf` here walks straight into the bind mount and deletes the
+     * host's device nodes. Unmount innermost-first, refuse to delete while
+     * anything is still mounted, and only then remove the tree.
+     */
+    /**
+     * Unmounts everything under [prefix] and then deletes it.
+     *
+     * Two hazards, both measured on the device:
+     *
+     * 1. `rm -rf` over a live `--bind /dev` walks into the bind and deletes the
+     *    host's device nodes -- toybox `rm` has no `--one-file-system`. Hence
+     *    the final check, which refuses to delete while anything is still
+     *    mounted under here.
+     * 2. Unmounting a mount propagates the unmount to the peers of its
+     *    **parent** mount. For the ordinary binds that is harmless: the parent
+     *    is the `/data` mount, and the host's `/dev` is not a child of `/data`.
+     *    It is not harmless for `mnt/android`, which the local session creates
+     *    with `-o rbind /`: there the replica's root *is* a peer of the real
+     *    `/`, so unmounting its children reaches the host's `/system`, `/data`
+     *    and the rest -- the phone loses every binary mid-session and has to be
+     *    rebooted. `SessionScripts` already takes that subtree out of the peer
+     *    group with `rslave` when it creates it; doing it again here, on every
+     *    mount, costs nothing and covers anything an older build left behind.
+     *
+     * Order matters too: reverse lexicographic sort puts a child mount path
+     * before its parent, which is the order they have to go in.
+     */
+    private fun wipeRootfs(prefix: String): Boolean {
+        if (!runSuCommand(com.xiaoian.app.terminal.SessionScripts.unmountTree(prefix))) {
+            Log.e(TAG, "Refusing to delete $prefix: something is still mounted under it")
+            return false
         }
-        if (exitCode != 0) {
-            Log.e(TAG, "su command failed (exit $exitCode): $command\nOutput: $output")
+        return runSuCommand("rm -rf $prefix", RootShell.NO_TIMEOUT)
+    }
+
+    /**
+     * Runs one command in the shared root shell.
+     *
+     * These used to be `ProcessBuilder("su", "-c", …)` each, so installing the
+     * tool rootfs alone cost a dozen Magisk prompts. The chroot `apt-get` runs
+     * below can go quiet for minutes, hence the explicit idle timeouts.
+     */
+    private fun runSuCommand(command: String, idleTimeoutMs: Long = RootShell.DEFAULT_IDLE_TIMEOUT_MS): Boolean {
+        val output = StringBuilder()
+        val result = RootShell.shared.execBlocking(command, idleTimeoutMs) { line ->
+            output.appendLine(line)
         }
-        return exitCode == 0
+        if (output.isNotBlank()) Log.d(TAG, "root: $output")
+        if (!result.success) {
+            Log.e(TAG, "root command failed (exit ${result.exitCode}): $command\n" +
+                "stderr: ${result.stderr}\noutput: $output")
+        }
+        return result.success
     }
 
     private fun runSuCommandWithOutput(command: String): String {
-        val pb = ProcessBuilder("su", "-c", command)
-        pb.redirectErrorStream(true)
-        val process = pb.start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        process.waitFor()
-        return output.trim()
+        val output = StringBuilder()
+        val result = RootShell.shared.execBlocking(command) { line -> output.appendLine(line) }
+        // The callers grep this for markers, so stderr belongs in it too --
+        // the old version merged the streams with redirectErrorStream.
+        if (result.stderr.isNotBlank()) output.appendLine(result.stderr)
+        return output.toString().trim()
     }
 
     suspend fun installPackages(packages: List<String>, onProgress: (String, Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
@@ -308,7 +361,7 @@ class BootstrapManager(private val context: Context) {
         onProgress("Updating package lists...", 0.91f)
         Log.i(TAG, "Running apt update inside chroot")
 
-        val updateOk = runSuCommand("chroot $prefix /bin/bash -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; apt-get update'")
+        val updateOk = runSuCommand("chroot $prefix /bin/bash -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; apt-get update'", RootShell.NO_TIMEOUT)
         if (!updateOk) {
             Log.e(TAG, "apt-get update failed")
             onProgress("ERROR: apt-get update failed!", 0.91f)
@@ -319,7 +372,7 @@ class BootstrapManager(private val context: Context) {
         onProgress("Installing: $pkgsStr", 0.95f)
         Log.i(TAG, "Installing packages: $pkgsStr")
 
-        val installOk = runSuCommand("chroot $prefix /bin/bash -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgsStr'")
+        val installOk = runSuCommand("chroot $prefix /bin/bash -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgsStr'", RootShell.NO_TIMEOUT)
         if (!installOk) {
             Log.e(TAG, "apt-get install failed for: $pkgsStr")
             onProgress("ERROR: Package installation failed!", 0.95f)

@@ -1,84 +1,62 @@
 package com.xiaoian.app.shell
 
-import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
-
 data class ShellResult(
     val success: Boolean,
     val error: String
 )
 
-class ShellExecutor {
+/**
+ * Runs a command as root and decides what to report when it fails.
+ *
+ * The root transition itself belongs to [RootShell]: this class no longer
+ * spawns `su` per command, it hands the command to a shell that is already
+ * open. Callers therefore pass a bare command -- a `su -c '...'` wrapper here
+ * would open a second root shell inside the first one.
+ */
+class ShellExecutor(private val shell: RootShell = RootShell.shared) {
 
     private companion object {
         /** How much of a failing command's output is kept for the UI. */
         const val ERROR_TAIL_LINES = 40
     }
 
-    suspend fun run(command: String, onOutput: ((String) -> Unit)? = null): ShellResult = withContext(Dispatchers.IO) {
-        var process: Process? = null
-        try {
-            Log.d("ShellExecutor", "Running: $command")
-            process = ProcessBuilder("su", "-c", command)
-                .redirectErrorStream(false)
-                .start()
-            val proc = process
+    suspend fun run(
+        command: String,
+        idleTimeoutMs: Long = RootShell.DEFAULT_IDLE_TIMEOUT_MS,
+        onOutput: ((String) -> Unit)? = null,
+    ): ShellResult {
+        val lastOutputLines = ArrayDeque<String>()
+        // The scripts report their own failures on stdout as "[!]" lines.
+        // Those are worth far more than anything on stderr.
+        val scriptErrors = ArrayDeque<String>()
 
-            coroutineScope {
-                // stderr is drained concurrently: read only after stdout ended,
-                // a script writing more than a pipe buffer (64 KB) of stderr
-                // would block forever.
-                val stderr = async(Dispatchers.IO) {
-                    val tail = ArrayDeque<String>()
-                    proc.errorStream.bufferedReader().forEachLine { l ->
-                        Log.e("ShellExecutor", "Error: $l")
-                        tail.addLast(l)
-                        if (tail.size > ERROR_TAIL_LINES) tail.removeFirst()
-                    }
-                    tail.joinToString("\n")
+        val result = shell.exec(command, idleTimeoutMs) { line ->
+            if (!ScriptOutputParser.isProtocolLine(line)) {
+                lastOutputLines.addLast(line)
+                // The scripts end a failure with a diagnostic dump; five
+                // lines used to cut off everything that mattered.
+                if (lastOutputLines.size > ERROR_TAIL_LINES) lastOutputLines.removeFirst()
+                if (line.trimStart().startsWith("[!]")) {
+                    scriptErrors.addLast(line)
+                    if (scriptErrors.size > ERROR_TAIL_LINES) scriptErrors.removeFirst()
                 }
-
-                val lastOutputLines = ArrayDeque<String>()
-                // The scripts report their own failures on stdout as "[!]"
-                // lines. Those are worth far more than anything on stderr.
-                val scriptErrors = ArrayDeque<String>()
-                proc.inputStream.bufferedReader().forEachLine { l ->
-                    Log.d("ShellExecutor", "Output: $l")
-                    if (!ScriptOutputParser.isProtocolLine(l)) {
-                        lastOutputLines.addLast(l)
-                        // The scripts end a failure with a diagnostic dump; five
-                        // lines used to cut off everything that mattered.
-                        if (lastOutputLines.size > ERROR_TAIL_LINES) lastOutputLines.removeFirst()
-                        if (l.trimStart().startsWith("[!]")) {
-                            scriptErrors.addLast(l)
-                            if (scriptErrors.size > ERROR_TAIL_LINES) scriptErrors.removeFirst()
-                        }
-                    }
-                    onOutput?.invoke(l)
-                }
-
-                val exitCode = proc.waitFor()
-                Log.d("ShellExecutor", "Exit code: $exitCode")
-
-                // Order matters. A single stray line on stderr -- "Terminated"
-                // from a `timeout` that fired earlier, say -- used to mask every
-                // diagnostic the script had printed about the actual failure.
-                var errStr = scriptErrors.joinToString("\n").trim()
-                if (errStr.isEmpty()) errStr = stderr.await().trim()
-                if (exitCode != 0 && errStr.isEmpty()) {
-                    errStr = lastOutputLines.joinToString("\n").trim()
-                }
-
-                ShellResult(exitCode == 0, errStr)
             }
-        } catch (e: Exception) {
-            Log.e("ShellExecutor", "Failed to run command", e)
-            ShellResult(false, e.message ?: "Unknown execution error")
-        } finally {
-            process?.destroy()
+            onOutput?.invoke(line)
         }
+
+        // A broken shell is not a failing command, and saying so beats
+        // reporting a command that never ran as having exited non-zero.
+        result.failure?.let { return ShellResult(false, it) }
+
+        // Order matters. A single stray line on stderr -- "Terminated" from a
+        // `timeout` that fired earlier, say -- used to mask every diagnostic
+        // the script had printed about the actual failure.
+        var errStr = scriptErrors.joinToString("\n").trim()
+        if (errStr.isEmpty()) errStr = result.stderr.trim()
+        if (result.exitCode != 0 && errStr.isEmpty()) {
+            errStr = lastOutputLines.joinToString("\n").trim()
+        }
+
+        return ShellResult(result.exitCode == 0, errStr)
     }
 }

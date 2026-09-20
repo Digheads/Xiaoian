@@ -8,14 +8,22 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application>
+        <!--
+            taskAffinity + singleInstance put the Wayland surface in a window
+            of its own, the way Termux:X11's activity already does. Without
+            them this shares the Xiaoian app's task, so "open desktop" replaces
+            the dashboard instead of opening beside it.
+        -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:enableOnBackInvokedCallback="false"
             android:exported="true"
-            android:launchMode="singleTask"
+            android:label="@string/anland_window_label"
+            android:launchMode="singleInstance"
             android:resizeableActivity="true"
-            android:supportsPictureInPicture="true">
+            android:supportsPictureInPicture="true"
+            android:taskAffinity=".AnlandMainActivity">
             <property
                 android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
                 android:value="true" />

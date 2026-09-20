@@ -1,6 +1,18 @@
-# Xiaoian
+# Xiaoian — the standalone scripts
 
 **Debian for Android** — a full Linux desktop environment on Xiaomi (and other Android) phones, powered by a `chroot`-based Debian container.
+
+> **This document describes the original, Termux-based scripts in this
+> directory.** They are run by hand from a Termux root shell, and they expect
+> you to install Termux, Termux:X11 and the Anland daemon yourself.
+>
+> If you want the same desktops without any of that, use the **Xiaoian app**
+> instead: it carries its own display frontends and needs no Termux at all.
+> See [the app's README](../README.md) for how to use it and
+> [docs/ARCHITECTURE.md](../ARCHITECTURE.md) for how it is built.
+> The app ships its own, modified copies of these scripts under
+> `src/app/src/main/assets/` — the two files here are the standalone lineage
+> and are not what the app runs.
 
 Two variants are available:
 
@@ -111,7 +123,7 @@ which anland
 # In Termux:
 pkg install git
 git clone https://github.com/Digheads/Xiaoian.git
-cd Xiaoian
+cd Xiaoian/original
 chmod +x xiaoian-wayland-kde.sh xiaoian-x11-xfce.sh
 ```
 
@@ -120,8 +132,8 @@ chmod +x xiaoian-wayland-kde.sh xiaoian-x11-xfce.sh
 ```bash
 # In Termux:
 pkg install wget
-wget https://raw.githubusercontent.com/Digheads/Xiaoian/main/xiaoian-wayland-kde.sh
-wget https://raw.githubusercontent.com/Digheads/Xiaoian/main/xiaoian-x11-xfce.sh
+wget https://raw.githubusercontent.com/Digheads/Xiaoian/main/original/xiaoian-wayland-kde.sh
+wget https://raw.githubusercontent.com/Digheads/Xiaoian/main/original/xiaoian-x11-xfce.sh
 chmod +x xiaoian-*.sh
 ```
 
@@ -632,4 +644,4 @@ dpkg -r anland
 
 GPLv3 Licence — Copyright (c) 2026 Digheads
 
-See the full licence in the [LICENCE](LICENCE) file.
+See the full licence in the [LICENCE](../LICENCE) file.
