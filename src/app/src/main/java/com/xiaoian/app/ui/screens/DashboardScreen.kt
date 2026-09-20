@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +25,7 @@ fun DashboardScreen(
     innerPadding: PaddingValues = PaddingValues(0.dp),
     viewModel: DashboardViewModel = viewModel(),
     onOpenTerminal: (SessionSpec?) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val state by viewModel.sessionState.collectAsState()
     val setup by viewModel.setupProgress.collectAsState()
@@ -46,10 +48,24 @@ fun DashboardScreen(
             .verticalScroll(scrollState),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AppLogo(modifier = Modifier.size(48.dp))
-            Spacer(modifier = Modifier.width(12.dp))
-            Text("Xiaoian", style = MaterialTheme.typography.headlineLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Balances the gear so the title stays centred.
+            Spacer(modifier = Modifier.width(48.dp))
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AppLogo(modifier = Modifier.size(48.dp))
+                Spacer(modifier = Modifier.width(12.dp))
+                Text("Xiaoian", style = MaterialTheme.typography.headlineLarge)
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings")
+            }
         }
         Spacer(modifier = Modifier.height(32.dp))
         

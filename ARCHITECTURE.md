@@ -346,6 +346,74 @@ code it is `TerminalView(activity, null)`.
 
 ---
 
+## Preferences
+
+There are **three** settings screens in this APK, and that is deliberate.
+
+| Screen | Store | Owns |
+|---|---|---|
+| `com.xiaoian.app.SettingsActivity` | `xiaoian` | The terminal's own options, and the shared key bar layout |
+| `com.anland.termux.SettingsActivity` | `anland_settings` | The KDE/Wayland frontend |
+| `com.termux.x11.LoriePreferences` | default + `secondary` | The XFCE/X11 frontend |
+
+The app's screen links to the other two. The notification's **Preferences**
+button does not: while a desktop runs it opens *that desktop's* screen
+(`XiaoianService.buildNotification`), which is what you want with a session in
+front of you.
+
+### Why the two frontend screens are not merged
+
+The question comes up because they look like near-duplicates: both have
+orientation, PIP, cutout, pointer capture and a "response to user actions"
+block. About 17 keys overlap by concept. They should still stay apart.
+
+- **They are different programs.** `:lorie` drives androidx.preference from
+  `res/xml/preferences.xml`, which a Gradle task (`generatePrefs`) turns into a
+  typed `Prefs` class at build time, behind a `PreferenceDataStore`, with a
+  second store for secondary displays and a broadcast/AIDL CLI
+  (`termux-x11-preference`). `:anland` hand-builds framework `View`s — no
+  androidx at all — and calls `getSharedPreferences` at each site. Neither can
+  absorb the other without being rewritten.
+- **The overlapping keys are not the same keys.** `hideCutout` is a boolean;
+  `hide_display_cutout` is a four-value enum. `touchMode` is `"1"`/`"2"`/`"3"`;
+  `touchpad_mode` is a boolean. Resolution is a mode + scale + list + custom
+  quartet on one side and two integers on the other. The user-action value sets
+  differ. A shared store needs a translation layer per key — more code than the
+  duplication it removes, and it would bypass the `Prefs` generator that derives
+  `:lorie`'s types from the XML.
+- **Decisively: both modules are re-synced from upstream.** `anland-update.md`
+  and `termux-x11-update.md` both say to overwrite `java/` and `res/` wholesale
+  and then re-apply a short list of divergences. A merged screen would turn the
+  largest and most-churned file in each module into a permanent manual merge.
+
+### What *is* shared
+
+The extra keys bar. The terminal draws the same `ExtraKeysBar` as the KDE
+desktop, from the same `anland_settings/extra_keys_layout` JSON, so editing it
+in one place changes both. XFCE is **not** in this: `:lorie` has a bar of its
+own with a different format (`extra_keys_config`, Termux syntax, in the default
+store), edited in its own screen.
+
+`AppPrefs` is the single place where the borrowed store and key names are
+written down — mirrored from `ExtraKeysBar.PREFS_NAME` and
+`KEY_EXTRA_KEYS_LAYOUT`, so an upstream rename has one place to fix. The editor
+itself only uses `ExtraKeysBar.defaultLayoutJson()` and
+`ExtraKeysBar.validateLayout()`, two public statics that exist for exactly this,
+which is why none of it adds a divergence to re-apply on the next sync.
+
+One deliberate difference from anland's editor: it persists on every keystroke,
+so a half-typed layout drops the bar to its built-in default mid-word. Ours
+writes only when the JSON parses — or when the field is empty, which is how the
+built-in layout is restored.
+
+`TerminalActivity.onResume()` compares the stored layout against
+`appliedLayoutJson` and rebuilds only on a difference, the same pull-on-resume
+approach anland's `MainActivity` uses. There is no listener and no broadcast:
+the settings screen is the only writer, and you always come back through
+`onResume`.
+
+---
+
 ## Mounts and mount propagation
 
 This is the part that will bite you, so it gets its own section.
@@ -400,6 +468,22 @@ down. `run`, `tmp`, `home` and `dev/shm` are left alone on purpose: the script
 mounts `run` as a *fresh* tmpfs per session and only clears the stale one while
 it is unmounted.
 
+Starting the desktop afterwards must not kill that shell. `do_start` begins by
+clearing whatever it finds in the chroot (`unmount_all`, which calls
+`stop_chroot_procs` first), and that killed the terminal and unmounted from
+under it. So the app passes `XIAOIAN_OPEN_SESSIONS` — the path of
+`TerminalSessions.openListFile()`, one live session id per line — and the script
+splits the chroot's processes with `chroot_pids_owned_by app|foreign`, comparing
+each one's session id (field 4 after the comm in `/proc/N/stat`, the same field
+`RootPty` and `sweepOrphans` use, and the reason `ptyspawn` calls `setsid()`).
+When the only things in the chroot are in-app terminals it skips the teardown
+entirely; `mount_all` is idempotent, so a chroot that is already set up needs
+nothing doing to it.
+
+Only the **start** path spares them. Teardown still kills everything: by then
+`stopSession` has already run `closeAllFor`, so the list is empty, and anything
+left would keep the mounts busy and fail the stop.
+
 ---
 
 ## Things that are not what they look like
@@ -407,9 +491,9 @@ it is unmounted.
 - **`plan/`** is a set of early design notes. Parts are superseded and at least
   one claim in it was wrong (the licensing); it is kept for history, not as a
   specification.
-- **`ui/screens/LogViewerScreen.kt`, `ui/screens/SettingsScreen.kt` and
-  `display/DisplayDetector.kt`** are not referenced from anywhere. Dead, or not
-  wired up yet.
+- **`ui/screens/LogViewerScreen.kt` and `display/DisplayDetector.kt`** are not
+  referenced from anywhere. Dead, or not wired up yet. (`SettingsScreen.kt` was
+  the third of these until it became the app's settings — see **Preferences**.)
 - **`XiaoianService.ACTION_TERMINAL`** is handled but no notification button
   sends it.
 - **`XiaoianApplication` extends `LorieApp`**, not `Application` — Termux:X11's

@@ -46,6 +46,18 @@
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density"
             android:windowSoftInputMode="adjustResize" />
 
+        <!--
+            The app's own settings. Its own task, like both frontends'
+            settings screens, so the gear on the terminal's key bar does not
+            move the user between tasks.
+        -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=".XiaoianSettings"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Foreground service -->
         <service
             android:name=".service.XiaoianService"

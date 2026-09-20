@@ -135,6 +135,43 @@ private static String extractedLibPath() {
 `LorieView` and Anland's `MainActivity` use plain `System.loadLibrary`, which
 works in either packaging mode — this one call site is the only thing that cares.
 
+### D. The X server must not kill itself when the window is closed (CRITICAL)
+
+In `LorieApp.onBroadcastReceive`, the `ACTION_START` branch must treat a binder
+it already holds as the same X server announcing itself again, not as a second
+one. Look for the `XIAOIAN` comments around `boolean known = binder ==
+activeService || binder == pendingConnection;`.
+
+**What upstream does and why it breaks here.** The X server re-broadcasts
+`ACTION_START` once a second for as long as nothing is connected to it
+(`CmdEntryPoint.sendBroadcastDelayed`). The receiver is declared in the
+manifest, so it runs whether or not a `MainActivity` exists. Upstream's guard
+is:
+
+```java
+if ((activeService != null && activeService.isBinderAlive())
+        || (pendingConnection != null && pendingConnection.isBinderAlive())) {
+    ... reportFatalError("Termux:X11 already has an active X server connection.");
+```
+
+With the desktop running but its window closed there is no activity, so the
+first broadcast is parked in `pendingConnection` and the **second one, from the
+same server**, matches that guard. `reportFatalError` goes straight to
+`FatalError()` in `cmdentrypoint.cpp`, which exits the X server. Every X client
+dies with it, `xfce4-session` exits, the session wrapper runs its teardown, and
+the whole desktop stops roughly two seconds after the user closed the window.
+Reopening it quickly only races the same broadcast, which is why the window came
+back but never reconnected.
+
+Upstream does not hit this because there the frontend is normally open whenever
+the server runs. Xiaoian deliberately lets a desktop keep running with its
+window closed, so the fix has to be re-applied after every sync. Two symptoms to
+test for: closing the XFCE window must leave the session running, and reopening
+it must reconnect to the same desktop.
+
+The same edit also moves `linkToDeath` behind the `known` check — without that
+the retry loop registered a death recipient every second.
+
 ## 5. Verification
 - `XiaoianApplication.kt` must continue to extend the `com.termux.x11.LorieApp` class.
 - The `xiaoian-x11-xfce.sh` script relies on the `dalvikvm -cp ... com.termux.x11.CmdEntryPoint` command to launch Xwayland. This interface rarely changes, but if it fails, check if the `CmdEntryPoint` class was moved or renamed.

@@ -403,6 +403,43 @@ write_lib || { echo "[!] ERROR: cannot write $LIB_FILE"; exit 1; }
 . "$LIB_FILE"
 
 # ---- script-only helpers (the wrapper does not need these) -----------
+# ---- in-app terminals ------------------------------------------------
+# A chroot terminal can be opened before its desktop, in which case it
+# mounts the chroot itself and keeps a root shell alive in there. The
+# start path below clears the chroot out before it begins, which used to
+# kill exactly that shell and unmount from under it. The app writes the
+# session ids of its live terminals to $XIAOIAN_OPEN_SESSIONS (see
+# ScriptEnv.kt and TerminalSessions.rememberOpen), so they can be told
+# apart from a crashed session's leftovers.
+#
+# Only the start path spares them. Teardown still kills everything in the
+# chroot: by then the app has already closed its terminals, and anything
+# left would keep the mounts busy.
+app_terminal_sids() {
+    [ -n "$XIAOIAN_OPEN_SESSIONS" ] && [ -f "$XIAOIAN_OPEN_SESSIONS" ] || return 0
+    cat "$XIAOIAN_OPEN_SESSIONS" 2>/dev/null
+}
+
+# Chroot pids split by owner: "app" for the in-app terminals, "foreign"
+# for everything else. Field 4 after the comm in /proc/N/stat is the
+# session id -- the same field TerminalSessions and RootPty use, and the
+# reason ptyspawn calls setsid().
+chroot_pids_owned_by() {
+    local want="$1" sids pid rest
+    # The bare $(...) word-splits on the newlines, echo rejoins with
+    # spaces, so the case below can match " <sid> " on either side.
+    sids=" $(echo $(app_terminal_sids)) "
+    for pid in $(find_chroot_pids); do
+        rest=$(cat "/proc/$pid/stat" 2>/dev/null) || continue
+        rest=${rest##*\) }
+        set -- $rest
+        case "$sids" in
+            *" $4 "*) [ "$want" = app ] && echo "$pid" ;;
+            *)        [ "$want" = foreign ] && echo "$pid" ;;
+        esac
+    done
+}
+
 is_fresh() {
     [ -f "$1" ] || return 1
     [ $(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || echo 0) )) -lt "$UPDATE_CHECK_INTERVAL" ]
@@ -1163,8 +1200,15 @@ do_start() {
         step_done rootfs-extract
     fi
 
-    echo "[*] Removing previous session locks..."
-    unmount_all
+    # mount_all below is idempotent, so a chroot an in-app terminal has
+    # already set up needs nothing doing to it -- and unmount_all would kill
+    # that terminal's shell on the way.
+    if [ -n "$(chroot_pids_owned_by app)" ] && [ -z "$(chroot_pids_owned_by foreign)" ]; then
+        echo "[*] In-app terminal(s) are using this chroot; keeping them and their mounts."
+    else
+        echo "[*] Removing previous session locks..."
+        unmount_all
+    fi
     rm -rf $TMPDIR/.X11-unix $TMPDIR/.X0-lock \
            $DEBIAN_ROOTFS/tmp/.X11-unix $DEBIAN_ROOTFS/tmp/.X0-lock 2>/dev/null
 

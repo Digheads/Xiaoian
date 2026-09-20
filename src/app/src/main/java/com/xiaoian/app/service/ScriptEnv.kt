@@ -41,11 +41,25 @@ object ScriptEnv {
     fun rootfsTarball(context: Context): String =
         BootstrapManager(context).rootfsTarball.absolutePath
 
+    /**
+     * The in-app terminal's open session ids, one per line.
+     *
+     * A chroot terminal can be opened before its desktop, and it mounts the
+     * chroot itself when it is. The start script clears out whatever it finds
+     * in the chroot before it begins, which killed exactly that shell; with
+     * this it can tell a live in-app terminal from a crashed session's
+     * leftovers. The file need not exist -- the scripts treat a missing one as
+     * "no terminals open".
+     */
+    fun openSessionsFile(context: Context): String =
+        com.xiaoian.app.terminal.TerminalSessions.openListFile(context).absolutePath
+
     /** `VAR=value` prefix to place in front of a script invocation. */
     fun prefix(context: Context): String =
         "ANLAND_BIN=${anlandBin(context)} " +
             "XIAOIAN_LIB_DIR=${libDir(context)} " +
-            "XIAOIAN_ROOTFS_TARBALL=${rootfsTarball(context)}"
+            "XIAOIAN_ROOTFS_TARBALL=${rootfsTarball(context)} " +
+            "XIAOIAN_OPEN_SESSIONS=${openSessionsFile(context)}"
 
     /**
      * Where a desktop's script and chroot live. The same `if (de == "kde")`

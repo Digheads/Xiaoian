@@ -5,12 +5,15 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.app.AlertDialog
+import android.graphics.Paint
 import android.os.Bundle
 import android.text.InputFilter
 import android.util.Log
+import android.view.Gravity
 import android.view.Menu
 import android.view.MotionEvent
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
@@ -30,7 +33,9 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import com.xiaoian.app.R
+import com.xiaoian.app.SettingsActivity
 import com.xiaoian.app.service.BootstrapManager
+import com.xiaoian.app.settings.AppPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,10 +63,6 @@ class TerminalActivity : ComponentActivity() {
         /** Matches the desktop bar; see anland's MainActivity.buildExtraKeysBar. */
         private const val BAR_ROW_DP = 37.5f
 
-        private const val TEXT_SIZE_MIN = 8
-        private const val TEXT_SIZE_MAX = 36
-        private const val TEXT_SIZE_DEFAULT = 14
-
         /**
          * [spec] null means "just show the terminal": whatever is already open,
          * or the chooser if nothing is.
@@ -87,7 +88,10 @@ class TerminalActivity : ComponentActivity() {
 
     private var extraKeysBar: ExtraKeysBar? = null
     private var current: XiaoianSession? = null
-    private var textSize = TEXT_SIZE_DEFAULT
+    private var textSize = AppPrefs.TEXT_SIZE_DEFAULT
+
+    /** The layout the bar on screen was built from; see [onResume]. */
+    private var appliedLayoutJson: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,6 +114,7 @@ class TerminalActivity : ComponentActivity() {
         }
 
         buildExtraKeysBar()
+        textSize = AppPrefs.terminalTextSize(this)
 
         // This order is not optional. setTextSize() builds the renderer and
         // then calls updateSize(), which divides by the renderer's metrics, and
@@ -159,6 +164,21 @@ class TerminalActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         TerminalSessions.listener = sessionListener
+
+        // Coming back from the settings screen, the bar's layout and whether it
+        // is shown at all can both have changed. Compare before rebuilding, the
+        // way anland's MainActivity.onResume does, so an ordinary return to the
+        // terminal is not a relayout.
+        val wantBar = AppPrefs.terminalExtraKeysVisible(this)
+        if (AppPrefs.extraKeysLayout(this) != appliedLayoutJson || wantBar != (extraKeysBar != null)) {
+            buildExtraKeysBar()
+        }
+        val size = AppPrefs.terminalTextSize(this)
+        if (size != textSize) {
+            textSize = size
+            terminalView.setTextSize(size)
+        }
+
         current?.let { terminalView.onScreenUpdated() }
         terminalView.requestFocus()
     }
@@ -210,10 +230,47 @@ class TerminalActivity : ComponentActivity() {
             .show()
     }
 
+    /**
+     * Shows a spinner while [block] runs.
+     *
+     * Opening a session waits on a root shell and closing one waits until the
+     * processes are actually gone; both take a couple of seconds, during which
+     * the screen looked frozen. Modal on purpose -- a second tap on "+" while
+     * the first was still working opened a session nobody asked for.
+     */
+    private suspend fun <T> withBusy(message: String, block: suspend () -> T): T {
+        val density = resources.displayMetrics.density
+        val pad = Math.round(24 * density)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad, pad, pad, pad)
+            addView(
+                ProgressBar(this@TerminalActivity).apply { isIndeterminate = true },
+                LinearLayout.LayoutParams(Math.round(32 * density), Math.round(32 * density)),
+            )
+            addView(
+                TextView(this@TerminalActivity).apply { text = message },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = pad },
+            )
+        }
+        val dialog = AlertDialog.Builder(this).setView(box).setCancelable(false).create()
+        runCatching { dialog.show() }
+        return try {
+            block()
+        } finally {
+            runCatching { dialog.dismiss() }
+        }
+    }
+
     private fun openSession(spec: SessionSpec) {
         lifecycleScope.launch {
             if (spec is SessionSpec.Local && !ensureToolRootfs()) return@launch
-            val result = TerminalSessions.open(this@TerminalActivity, spec)
+            val result = withBusy("Starting ${spec.label}...") {
+                TerminalSessions.open(this@TerminalActivity, spec)
+            }
             result.onSuccess { select(it) }
             result.onFailure {
                 Toast.makeText(
@@ -304,7 +361,11 @@ class TerminalActivity : ComponentActivity() {
         // No follow-up here: the store drops it from the list, and
         // onSessionsChanged picks the next tab or closes the screen. Doing it
         // in both places meant two code paths deciding what to show next.
-        lifecycleScope.launch { TerminalSessions.close(this@TerminalActivity, session) }
+        lifecycleScope.launch {
+            withBusy("Closing ${session.title}...") {
+                TerminalSessions.close(this@TerminalActivity, session)
+            }
+        }
     }
 
     // ----------------------------------------------------------------- tabs
@@ -333,10 +394,16 @@ class TerminalActivity : ComponentActivity() {
     private fun renderTabs(sessions: List<XiaoianSession>) {
         tabs.removeAllViews()
         sessions.forEach { session ->
-            // A finished session keeps its tab so its last words stay readable.
-            val label = if (session.isRunning) session.title else "${session.title} · ended"
-            tabs.addView(tabButton(label, session === current, session.isRunning) { select(session) }
-                .also { it.setOnLongClickListener { tabMenu(session); true } })
+            // A finished session keeps its tab so its last words stay readable;
+            // the name is struck through rather than suffixed, which said the
+            // same thing but pushed every other tab off the strip.
+            tabs.addView(
+                tabButton(session.title, session === current, session.isRunning) { select(session) }
+                    .also {
+                        it.setOnLongClickListener { tabMenu(session); true }
+                        if (!session.isRunning) it.contentDescription = "${session.title}, ended"
+                    }
+            )
         }
         tabs.addView(tabButton("+", false, true) { chooseSession() })
         tabs.contentDescription = "Long press a tab for its menu"
@@ -386,6 +453,9 @@ class TerminalActivity : ComponentActivity() {
         Button(this, null, android.R.attr.buttonBarButtonStyle).apply {
             setText(text)
             isAllCaps = false
+            paintFlags =
+                if (running) paintFlags and Paint.STRIKE_THRU_TEXT_FLAG.inv()
+                else paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             setTextColor(
                 when {
                     !running -> 0xFF777777.toInt()
@@ -400,23 +470,30 @@ class TerminalActivity : ComponentActivity() {
     // ------------------------------------------------------------ extra keys
 
     private fun buildExtraKeysBar() {
+        extraKeysHost.removeAllViews()
+        extraKeysBar = null
+        // Recorded even when the bar is hidden, so onResume still notices a
+        // layout edit made while it was off.
+        appliedLayoutJson = AppPrefs.extraKeysLayout(this)
+
+        if (!AppPrefs.terminalExtraKeysVisible(this)) {
+            extraKeysHost.visibility = View.GONE
+            return
+        }
+
         val sender = ExtraKeysSender(
             terminalView,
             onToggleKeyboard = { toggleSoftKeyboard() },
-            // The bar's layout is edited there, and it is the same layout the
-            // desktop frontend uses.
-            onOpenSettings = {
-                runCatching {
-                    startActivity(Intent().setClassName(
-                        packageName, "com.anland.termux.SettingsActivity",
-                    ))
-                }
-            },
+            // Our own settings, not the KDE frontend's: that screen is about
+            // daemon sockets and display resolution, and the one thing on it
+            // that means anything here -- this bar's layout -- now lives with
+            // the terminal's own options.
+            onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         val bar = ExtraKeysBar(this, sender)
         extraKeysBar = bar
         val height = Math.round(BAR_ROW_DP * resources.displayMetrics.density * bar.rowCount)
-        extraKeysHost.removeAllViews()
+        extraKeysHost.visibility = View.VISIBLE
         extraKeysHost.addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
     }
 
@@ -483,8 +560,9 @@ class TerminalActivity : ComponentActivity() {
         override fun onScale(scale: Float): Float {
             if (scale < 0.9f || scale > 1.1f) {
                 val delta = if (scale < 0.9f) -1 else 1
-                textSize = (textSize + delta).coerceIn(TEXT_SIZE_MIN, TEXT_SIZE_MAX)
+                textSize = (textSize + delta).coerceIn(AppPrefs.TEXT_SIZE_MIN, AppPrefs.TEXT_SIZE_MAX)
                 terminalView.setTextSize(textSize)
+                AppPrefs.setTerminalTextSize(this@TerminalActivity, textSize)
             }
             return 1.0f
         }

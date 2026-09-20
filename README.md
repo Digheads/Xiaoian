@@ -102,16 +102,18 @@ the three you want. **Long press a tab** for its menu:
 - **Rename** — up to 15 characters; leave it empty to go back to the default name
 - **Close** — ends the session and everything it started
 
-A session that exits on its own keeps its tab, greyed out and marked `· ended`,
-so you can still read why. Press **Enter** in it to close it.
+A session that exits on its own keeps its tab, greyed out with its name struck
+through, so you can still read why. Press **Enter** in it to close it.
 
 ### The key bar
 
-The row of extra keys at the bottom is the same one the desktop frontend uses,
-and it reads the same layout you can edit in the Anland settings. `CTRL`, `ALT`
-and `SHIFT` toggle on a tap and **lock on a long press**. They apply to keys
-from the bar *and* to characters you type on the soft keyboard, so bar-`CTRL`
-plus `c` sends `^C`.
+The row of extra keys at the bottom is the same one the KDE desktop uses, and
+it reads the same layout — edit it in either place and both follow. `CTRL`,
+`ALT` and `SHIFT` toggle on a tap and **lock on a long press**. They apply to
+keys from the bar *and* to characters you type on the soft keyboard, so
+bar-`CTRL` plus `c` sends `^C`.
+
+The **gear key** on the bar opens the app's settings, where the layout lives.
 
 ### `/mnt/android` — your phone's filesystem
 
@@ -126,6 +128,27 @@ It is unmounted again once the last live local session is gone. The desktop
 chroots deliberately do **not** get this mount — see
 [ARCHITECTURE.md](ARCHITECTURE.md#mounts-and-mount-propagation) for
 why.
+
+---
+
+## Settings
+
+The **gear** in the top right of the dashboard — and the gear key on the
+terminal's key bar — opens the app's settings:
+
+| | |
+|---|---|
+| **Extra keys bar** | The layout, as JSON, with the built-in template one tap away and an import from file. This bar is shared by the terminal and the KDE desktop. |
+| **Terminal** | Font size, and whether the key bar is shown at all. |
+
+Below those are links to each desktop's own settings, which are separate
+screens belonging to the two display frontends: the KDE one covers the display,
+touchpad, audio and the display daemon; the XFCE one covers resolution,
+scaling and filtering, pointer and scancode handling — **and its own key bar**,
+which is a different bar in a different format from the one above.
+
+While a desktop is running, **Preferences** in the notification goes straight
+to that desktop's screen.
 
 ---
 

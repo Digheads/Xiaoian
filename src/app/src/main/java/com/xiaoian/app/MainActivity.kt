@@ -1,5 +1,6 @@
 package com.xiaoian.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,6 +27,7 @@ class MainActivity : ComponentActivity() {
                     DashboardScreen(
                         innerPadding = innerPadding,
                         onOpenTerminal = { spec -> startActivity(TerminalActivity.intent(this, spec)) },
+                        onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                     )
                 }
             }

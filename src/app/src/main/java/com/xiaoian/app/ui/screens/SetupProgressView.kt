@@ -31,9 +31,15 @@ import java.util.Locale
 @Composable
 fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxWidth()) {
+        // The live line from the script, not the step name: the checklist below
+        // already says which step is running, and repeating it here left the
+        // only moving text -- what apt is actually doing -- at the very bottom
+        // of the card.
         Text(
-            progress.current?.title ?: "Starting session...",
-            style = MaterialTheme.typography.titleLarge
+            progress.detail.ifBlank { progress.current?.title ?: "Starting session..." },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -50,17 +56,6 @@ fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(20.dp))
         progress.steps.forEach { StepRow(it) }
-
-        if (progress.detail.isNotBlank()) {
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                progress.detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
 

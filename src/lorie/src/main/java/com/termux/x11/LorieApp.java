@@ -129,21 +129,48 @@ public class LorieApp extends Application {
                     break;
 
                 IBinder activeService = activity != null && activity.service != null ? activity.service.asBinder() : null;
-                if ((activeService != null && activeService.isBinderAlive()) || (pendingConnection != null && pendingConnection.isBinderAlive())) {
+
+                // XIAOIAN: the X server re-broadcasts ACTION_START once a second
+                // for as long as nothing is connected to it, see
+                // CmdEntryPoint.sendBroadcastDelayed(). Closing the desktop
+                // window leaves the server running with no MainActivity, so the
+                // first of those broadcasts was parked in pendingConnection and
+                // the second one -- from the very same server -- matched the
+                // guard below, was told it was a duplicate, and reportFatalError()
+                // took the server down with FatalError(). Every X client went with
+                // it: xfce4-session exited, the session wrapper ran its teardown,
+                // and the whole desktop stopped a few seconds after the window was
+                // closed. Reopening fast enough only raced the same broadcast.
+                //
+                // A binder we are already holding is that same server announcing
+                // itself again. Only a different one is a second X server.
+                boolean known = binder == activeService || binder == pendingConnection;
+
+                if (!known && ((activeService != null && activeService.isBinderAlive())
+                        || (pendingConnection != null && pendingConnection.isBinderAlive()))) {
                     try {
                         ICmdEntryInterface.Stub.asInterface(binder).reportFatalError("Termux:X11 already has an active X server connection.");
                     } catch (RemoteException ignored) {}
                     break;
                 }
 
-                try {
-                    binder.linkToDeath(() -> onConnectionDied(binder), 0);
-                } catch (RemoteException ignored) {}
+                // XIAOIAN: already connected to this one; nothing to redo.
+                if (binder == activeService)
+                    break;
+
+                // XIAOIAN: once per binder, not once per broadcast -- the retry
+                // loop above would otherwise add a death recipient every second.
+                if (!known) {
+                    try {
+                        binder.linkToDeath(() -> onConnectionDied(binder), 0);
+                    } catch (RemoteException ignored) {}
+                }
 
                 if (activity != null) {
                     try {
                         Log.v("LorieApp", "Got new ACTION_START intent");
                         activity.connectToService(binder);
+                        pendingConnection = null;
                     } catch (Exception e) {
                         Log.e("LorieApp", "Something went wrong while we extracted connection details from binder.", e);
                     }

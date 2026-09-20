@@ -58,6 +58,15 @@ object TerminalSessions {
     /** Open session ids, so a killed process can be cleaned up after. */
     private const val OPEN_LIST = "terminal/open-sessions"
 
+    /**
+     * The file [rememberOpen] writes, one session id per line.
+     *
+     * Also read by the desktop start scripts, which have to tell an in-app
+     * terminal apart from a crashed session's leftovers before they clear the
+     * chroot out -- see `XIAOIAN_OPEN_SESSIONS` in `ScriptEnv`.
+     */
+    fun openListFile(context: Context): File = File(context.filesDir, OPEN_LIST)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val counter = AtomicInteger()
 
@@ -172,7 +181,7 @@ object TerminalSessions {
         // clears an Android bind left behind by one Android killed.
         releaseAndroidBind(ctx)
 
-        val file = File(ctx.filesDir, OPEN_LIST)
+        val file = openListFile(ctx)
         val recorded = runCatching { file.readLines() }.getOrNull().orEmpty()
             .mapNotNull { it.trim().toIntOrNull() }
         if (recorded.isEmpty()) return@withContext 0
@@ -243,7 +252,7 @@ object TerminalSessions {
      * still has a tab, but nothing left to clean up.
      */
     private fun rememberOpen(context: Context) {
-        val file = File(context.filesDir, OPEN_LIST)
+        val file = openListFile(context)
         runCatching {
             file.parentFile?.mkdirs()
             val live = _sessions.value.filter { it.isRunning }.map { it.pty.sid.toString() }
