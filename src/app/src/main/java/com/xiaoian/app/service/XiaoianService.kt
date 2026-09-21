@@ -63,7 +63,11 @@ class XiaoianService : LifecycleService() {
         when (intent?.action) {
             ACTION_START -> startSession(
                 mode = intent.getStringExtra("mode") ?: "extend",
-                de = intent.getStringExtra("de") ?: "kde"
+                de = intent.getStringExtra("de") ?: "kde",
+                // -1 means "not chosen": one display, local mode, or a caller
+                // that does not know about the picker.
+                displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
+                displaySize = intent.getStringExtra("displaySize"),
             )
             ACTION_STOP -> stopSession()
             ACTION_LOCK -> lockPhone()
@@ -73,7 +77,12 @@ class XiaoianService : LifecycleService() {
         return START_STICKY
     }
 
-    private fun startSession(mode: String, de: String) {
+    private fun startSession(
+        mode: String,
+        de: String,
+        displayId: Int? = null,
+        displaySize: String? = null,
+    ) {
         currentMode = mode
         currentDE = de
         sessionManager.updateState(SessionState.Starting)
@@ -160,7 +169,8 @@ class XiaoianService : LifecycleService() {
                 // holding the shared one that long would block every quick
                 // query the dashboard makes meanwhile. And no idle timeout --
                 // an apt transaction can legitimately go quiet for a while.
-                val command = "${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -s --$mode"
+                val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize)
+                val command = "$env $scriptPath -s --$mode"
                 val sessionShell = RootShell.dedicated("session-$de")
                 val result = try {
                     ShellExecutor(sessionShell).run(

@@ -1,5 +1,6 @@
 package com.xiaoian.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaoian.app.display.ExternalDisplay
 import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
@@ -34,11 +36,32 @@ fun DashboardScreen(
     val kdeStorage by viewModel.kdeStorage.collectAsState()
     val storageLoading by viewModel.storageLoading.collectAsState()
     val uninstallState by viewModel.uninstallState.collectAsState()
+    val externalDisplays by viewModel.externalDisplays.collectAsState()
     
     // Opens on whatever the last started session used, and rememberSaveable so
     // a half-made choice also survives a rotation.
     var selectedDE by rememberSaveable { mutableStateOf(viewModel.lastDe) }
     var selectedMode by rememberSaveable { mutableStateOf(viewModel.lastMode) }
+
+    // Which external display to use. Not remembered across runs: display ids
+    // are assigned as screens appear, so yesterday's number means nothing.
+    var selectedDisplayId by rememberSaveable { mutableStateOf<Int?>(null) }
+    // Drop a choice whose screen has been unplugged, and adopt the only one
+    // there is, so the value handed to startSession is always live.
+    LaunchedEffect(externalDisplays) {
+        if (externalDisplays.none { it.id == selectedDisplayId }) {
+            selectedDisplayId = externalDisplays.firstOrNull()?.id
+        }
+    }
+    val selectedDisplay: ExternalDisplay? = externalDisplays.firstOrNull { it.id == selectedDisplayId }
+
+    // Extend and mirror both put the desktop on a screen that has to exist.
+    // Without one the script refuses the start outright, so the choice is
+    // offered greyed out rather than accepted and then rejected.
+    val hasExternalDisplay = externalDisplays.isNotEmpty()
+    LaunchedEffect(hasExternalDisplay) {
+        if (!hasExternalDisplay && selectedMode != "local") selectedMode = "local"
+    }
     var showUninstallDialog by remember { mutableStateOf<String?>(null) }
     
     val scrollState = rememberScrollState()
@@ -88,21 +111,53 @@ fun DashboardScreen(
             
             // Mode Selection
             Text("Display Mode", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.padding(vertical = 8.dp)) {
-                RadioButton(selected = selectedMode == "extend", onClick = { selectedMode = "extend" })
-                Text("Extend", modifier = Modifier.align(Alignment.CenterVertically))
+            Row(
+                modifier = Modifier.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ModeOption("Extend", "extend", selectedMode, hasExternalDisplay) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
-                RadioButton(selected = selectedMode == "mirror", onClick = { selectedMode = "mirror" })
-                Text("Mirror", modifier = Modifier.align(Alignment.CenterVertically))
+                ModeOption("Mirror", "mirror", selectedMode, hasExternalDisplay) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
-                RadioButton(selected = selectedMode == "local", onClick = { selectedMode = "local" })
-                Text("Local", modifier = Modifier.align(Alignment.CenterVertically))
+                ModeOption("Local", "local", selectedMode, true) { selectedMode = it }
+            }
+            if (!hasExternalDisplay) {
+                Text(
+                    "Connect an external display to use extend or mirror.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Only worth asking when there is something to choose between.
+            // With one screen the scripts find it themselves, and in local
+            // mode the desktop never leaves the phone.
+            if (selectedMode != "local" && externalDisplays.size > 1) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("External Display", style = MaterialTheme.typography.titleMedium)
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    externalDisplays.forEach { display ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedDisplayId = display.id }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selectedDisplayId == display.id,
+                                onClick = { selectedDisplayId = display.id }
+                            )
+                            Text(display.label)
+                        }
+                    }
+                }
             }
             
             Spacer(modifier = Modifier.height(32.dp))
             
             Button(
-                onClick = { viewModel.startSession(selectedMode, selectedDE) },
+                onClick = { viewModel.startSession(selectedMode, selectedDE, selectedDisplay) },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
                 Text("START DESKTOP")
@@ -405,4 +460,32 @@ fun InstalledEnvironmentCard(
             }
         }
     }
+}
+
+/**
+ * One display-mode radio button.
+ *
+ * Exists so the disabled state is written once: a plain [Text] beside a
+ * disabled [RadioButton] stays fully opaque, which reads as enabled, so the
+ * label has to be dimmed by hand.
+ */
+@Composable
+private fun ModeOption(
+    label: String,
+    value: String,
+    selected: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit,
+) {
+    RadioButton(
+        selected = selected == value,
+        enabled = enabled,
+        onClick = { onSelect(value) }
+    )
+    Text(
+        label,
+        // Material's disabled-content alpha; the Row centres it vertically.
+        color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    )
 }

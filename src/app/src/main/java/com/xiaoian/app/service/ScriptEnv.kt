@@ -54,12 +54,27 @@ object ScriptEnv {
     fun openSessionsFile(context: Context): String =
         com.xiaoian.app.terminal.TerminalSessions.openListFile(context).absolutePath
 
-    /** `VAR=value` prefix to place in front of a script invocation. */
-    fun prefix(context: Context): String =
-        "ANLAND_BIN=${anlandBin(context)} " +
-            "XIAOIAN_LIB_DIR=${libDir(context)} " +
-            "XIAOIAN_ROOTFS_TARBALL=${rootfsTarball(context)} " +
-            "XIAOIAN_OPEN_SESSIONS=${openSessionsFile(context)}"
+    /**
+     * `VAR=value` prefix to place in front of a script invocation.
+     *
+     * [displayId] and [displaySize] name the external display the user picked,
+     * and are only meaningful for a start in extend or mirror mode. Left out,
+     * the scripts fall back to their own `dumpsys display` parsing, which takes
+     * the first external display it finds -- fine with one screen, arbitrary
+     * with two.
+     */
+    fun prefix(
+        context: Context,
+        displayId: Int? = null,
+        displaySize: String? = null,
+    ): String = buildString {
+        append("ANLAND_BIN=${anlandBin(context)} ")
+        append("XIAOIAN_LIB_DIR=${libDir(context)} ")
+        append("XIAOIAN_ROOTFS_TARBALL=${rootfsTarball(context)} ")
+        append("XIAOIAN_OPEN_SESSIONS=${openSessionsFile(context)}")
+        if (displayId != null) append(" XIAOIAN_DISPLAY_ID=$displayId")
+        if (!displaySize.isNullOrBlank()) append(" XIAOIAN_DISPLAY_SIZE=$displaySize")
+    }
 
     /**
      * Where a desktop's script and chroot live. The same `if (de == "kde")`

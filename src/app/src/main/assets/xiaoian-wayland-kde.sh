@@ -174,6 +174,7 @@ DEBIAN_ROOTFS="$INFRA_ROOT/debian"
 STATE_FILE="$INFRA_ROOT/state"
 LOCK_STATE_FILE="$INFRA_ROOT/locked"
 MODE_FILE="$INFRA_ROOT/mode"
+DISPLAY_FILE="$INFRA_ROOT/display"
 WATCHER_SCRIPT="$INFRA_ROOT/watcher.sh"
 WATCHER_PID_FILE="$INFRA_ROOT/watcher.pid"
 SESSION_WRAPPER="$INFRA_ROOT/session.sh"
@@ -207,6 +208,17 @@ state_pid() {
 is_running() { state_pid >/dev/null; }
 is_locked()  { [ -f "$LOCK_STATE_FILE" ]; }
 saved_mode() { [ -f "$MODE_FILE" ] && cat "$MODE_FILE" 2>/dev/null; }
+
+# The external display the user picked, remembered for the rest of the session.
+# The app only passes it on --start; --lock runs later and on its own, and it
+# relaunches the frontend on "the" external display, which with two screens
+# would otherwise be whichever one dumpsys happens to list first.
+# Format: "<displayId> <WxH>".
+saved_display_id()   { [ -f "$DISPLAY_FILE" ] && cut -d" " -f1 "$DISPLAY_FILE" 2>/dev/null; }
+saved_display_size() { [ -f "$DISPLAY_FILE" ] && cut -d" " -f2 "$DISPLAY_FILE" 2>/dev/null; }
+display_exists() {
+    dumpsys display 2>/dev/null | grep -qE "DisplayViewport\{[^}]*displayId=$1[,}]"
+}
 
 # ---- phone state (virtual lock, mirror resize) -----------------------
 find_touch_inhibit() {
@@ -255,7 +267,7 @@ restore_phone_state() {
         wm size reset 2>/dev/null
         wm density reset 2>/dev/null
     fi
-    rm -f "$MODE_FILE"
+    rm -f "$MODE_FILE" "$DISPLAY_FILE"
 }
 
 # State files that survived a reboot or a crashed wrapper.
@@ -664,7 +676,18 @@ ensure_installer_dir() {
 SESSION_SCRIPT="$DEBIAN_ROOTFS/start-kde.sh"
 SETUP_SCRIPT="$DEBIAN_ROOTFS/setup-pkgs.sh"
 
+# The app passes the display the user picked in the dashboard; both helpers
+# fall back to guessing when it did not, which is what happens with a single
+# screen or an older app build. The guess takes the first external display it
+# finds -- fine with one, arbitrary with two, which is the whole reason the
+# picker exists.
 detect_external_res() {
+    _size="$XIAOIAN_DISPLAY_SIZE"
+    [ -z "$_size" ] && _size=$(saved_display_size)
+    if [ -n "$_size" ]; then
+        echo "$_size"
+        return 0
+    fi
     dumpsys display 2>/dev/null \
         | grep -i 'mBaseDisplayInfo' \
         | grep -iE 'VIRTUAL|EXTERNAL|WIFI' \
@@ -674,6 +697,21 @@ detect_external_res() {
 }
 
 detect_external_display_id() {
+    # Freshly passed in by the app wins; otherwise whatever this session was
+    # started on. Verified against dumpsys either way: the user can pick a
+    # display and unplug it before the session starts, and a stale id would
+    # send the desktop to a screen that is not there -- a black window and no
+    # explanation. A miss falls through to guessing, which then reports the
+    # real problem.
+    _want="$XIAOIAN_DISPLAY_ID"
+    [ -z "$_want" ] && _want=$(saved_display_id)
+    if [ -n "$_want" ]; then
+        if display_exists "$_want"; then
+            echo "$_want"
+            return 0
+        fi
+        echo "[!] Chosen display $_want is gone; falling back." >&2
+    fi
     dumpsys display 2>/dev/null \
         | grep -oE 'DisplayViewport\{type=EXTERNAL[^}]*\}' \
         | grep -oE 'displayId=[0-9]+' \
@@ -1046,7 +1084,7 @@ do_start() {
         exit 1
     fi
 
-    rm -f "$MODE_FILE"
+    rm -f "$MODE_FILE" "$DISPLAY_FILE"
 
     step_plan settings   "Checking display settings"
     step_plan components "Upstream components"
@@ -1826,6 +1864,10 @@ WRAPPER
     chmod +x "$SESSION_WRAPPER"
 
     echo "$MODE" > "$MODE_FILE"
+    if [ -n "$EXTERNAL_DISPLAY_ID" ]; then
+        echo "$EXTERNAL_DISPLAY_ID $(detect_external_res)" > "$DISPLAY_FILE"
+        chmod 0644 "$DISPLAY_FILE"
+    fi
     chmod 0644 "$MODE_FILE"
 
     echo ""
@@ -1863,7 +1905,7 @@ WRAPPER
         fi
     else
         echo "[!] Session failed to start. Check $LOG_FILE"
-        rm -f "$STATE_FILE" "$MODE_FILE"
+        rm -f "$STATE_FILE" "$MODE_FILE" "$DISPLAY_FILE"
         exit 1
     fi
 }

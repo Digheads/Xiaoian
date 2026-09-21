@@ -71,6 +71,21 @@ In extend and mirror mode the notification (and the running-session card) offers
 the external display. It is hidden in local mode, where the phone screen *is*
 the desktop.
 
+**Extend and mirror are greyed out until an external display is connected** —
+both put the desktop on a screen that has to exist, and the scripts refuse the
+start outright without one. Plug a display in and they become selectable; unplug
+it and the selection falls back to local.
+
+**With more than one external display connected**, extend and mirror mode add an
+**External Display** list to the dashboard, naming each screen and its
+resolution. The list follows what is actually plugged in, so connecting or
+unplugging a screen updates it while you are looking at it. With a single
+external display there is nothing to choose and no list appears.
+
+The session stays on the display you picked, including when you **Lock** and
+unlock the phone. If that screen is gone by the time the desktop starts, the app
+falls back to whichever external display it can find and says so in the log.
+
 ---
 
 ## The terminal

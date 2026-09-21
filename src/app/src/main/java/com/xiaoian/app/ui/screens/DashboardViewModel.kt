@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
+import com.xiaoian.app.display.DisplayDetector
+import com.xiaoian.app.display.ExternalDisplay
 import com.xiaoian.app.service.XiaoianService
 import com.xiaoian.app.settings.AppPrefs
 import com.xiaoian.app.shell.RootShell
@@ -49,6 +51,24 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val lastDe: String = AppPrefs.lastDe(application)
     val lastMode: String = AppPrefs.lastMode(application)
 
+    /**
+     * Displays the desktop could be sent to, kept current while the dashboard
+     * is open: the picker is most useful exactly when someone is plugging
+     * something in, so a list read once at startup would be the stale one.
+     */
+    private val displayDetector = DisplayDetector(application)
+    private val _externalDisplays = MutableStateFlow(displayDetector.externalDisplays())
+    val externalDisplays: StateFlow<List<ExternalDisplay>> = _externalDisplays.asStateFlow()
+
+    private val displayWatch = displayDetector.observe {
+        _externalDisplays.value = displayDetector.externalDisplays()
+    }
+
+    override fun onCleared() {
+        displayWatch.close()
+        super.onCleared()
+    }
+
     companion object {
         private const val TAG = "DashboardViewModel"
         private const val XFCE_INFRA = "/data/local/xiaoian-x11-xfce"
@@ -59,7 +79,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         refreshStorage()
     }
 
-    fun startSession(mode: String, de: String) {
+    /**
+     * @param display which external display to use, or null to let the script
+     *   pick the first one it finds. Ignored in local mode.
+     */
+    fun startSession(mode: String, de: String, display: ExternalDisplay? = null) {
         // The only place a desktop starts from the dashboard, so the only place
         // that has to remember what it was started with.
         AppPrefs.setLastSelection(getApplication(), de, mode)
@@ -67,6 +91,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             action = XiaoianService.ACTION_START
             putExtra("mode", mode)
             putExtra("de", de)
+            if (mode != "local" && display != null) {
+                putExtra("displayId", display.id)
+                putExtra("displaySize", display.size)
+            }
         }
         getApplication<Application>().startForegroundService(intent)
     }

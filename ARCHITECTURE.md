@@ -498,6 +498,36 @@ storage the day anyone added a user. It also leaked: `.config/Thunar` and
 `.dbus/session-bus`, root-owned, were found at the top of the device's internal
 storage, put there by a desktop session that resolved `~` to `/home`.
 
+### Choosing an external display
+
+`DisplayDetector` enumerates everything that is not `Display.DEFAULT_DISPLAY`
+through `DisplayManager`, and registers a `DisplayListener` so the dashboard's
+list tracks what is plugged in. The framework's logical display id is the same
+number the scripts hand to `am start --display` and the same one
+`dumpsys display` prints, so it can be passed straight through.
+
+It is passed as `XIAOIAN_DISPLAY_ID` and `XIAOIAN_DISPLAY_SIZE` on the start
+command (`ScriptEnv.prefix`). The size comes along because mirror mode resizes
+the framework to match the external screen, and the script's own
+`detect_external_res` would otherwise take the first display it finds, which
+with two screens need not be the chosen one.
+
+The scripts then **remember it for the session**, in `$INFRA_ROOT/display`
+alongside the existing `mode` file. That is not redundancy: `--lock` runs as a
+separate later invocation with no environment from the app, and it relaunches
+the frontend on "the" external display. Without the remembered value, locking
+and unlocking the phone could move the desktop to the other screen.
+
+Order of preference in `detect_external_display_id`, each verified against
+`dumpsys` before use: what the app just passed → what this session started on →
+the first external display found. The verification matters because a display
+can be unplugged between picking it and starting; an unchecked stale id sends
+the desktop to a screen that is not there, which looks like a black window and
+explains nothing.
+
+Neither script's own detection was removed, so a start with no display passed
+behaves exactly as before.
+
 ### Never ask `/proc/mounts` whether something is mounted
 
 Not for anything under the app's data directory, anyway. `context.filesDir` is
@@ -559,9 +589,10 @@ left would keep the mounts busy and fail the stop.
 - **`plan/`** is a set of early design notes. Parts are superseded and at least
   one claim in it was wrong (the licensing); it is kept for history, not as a
   specification.
-- **`ui/screens/LogViewerScreen.kt` and `display/DisplayDetector.kt`** are not
-  referenced from anywhere. Dead, or not wired up yet. (`SettingsScreen.kt` was
-  the third of these until it became the app's settings — see **Preferences**.)
+- **`ui/screens/LogViewerScreen.kt`** is not referenced from anywhere. Dead, or
+  not wired up yet. (`SettingsScreen.kt` and `display/DisplayDetector.kt` were
+  the other two until they became the app's settings and the external-display
+  picker.)
 - **`XiaoianService.ACTION_TERMINAL`** is handled but no notification button
   sends it.
 - **`XiaoianApplication` extends `LorieApp`**, not `Application` — Termux:X11's
