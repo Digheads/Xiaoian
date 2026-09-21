@@ -81,9 +81,11 @@ Actions:
   -t, --stop        Stop the running system
   -u, --uninstall   Delete everything under the infra root
   -k, --lock        Virtually lock the phone (extend/mirror mode)
+      --unlock      Undo the virtual lock without the volume keys
   -e, --exsize      (mirror only) Resize framework to external display
   -i, --insize      (mirror only) Restore framework to phone resolution
   -r, --retarget    Switch a running session to a different mode
+      --relaunch    Reopen the frontend on the display the mode calls for
   -v, --version     Show version
   -h, --help        Show this help
 
@@ -126,9 +128,11 @@ for arg in "$@"; do
         --stop)      ACTION="stop" ;;
         --uninstall) ACTION="uninstall" ;;
         --lock)      ACTION="lock" ;;
+        --unlock)    ACTION="unlock" ;;
         --exsize)    ACTION="exsize" ;;
         --insize)    ACTION="insize" ;;
         --retarget)  ACTION="retarget" ;;
+        --relaunch)  ACTION="relaunch" ;;
         --version)   ACTION="version" ;;
         --mirror|--extend|--local)
             if [ "$MODE_SET" = "1" ]; then
@@ -176,6 +180,11 @@ write_lib() {
 DEBIAN_ROOTFS="$INFRA_ROOT/debian"
 STATE_FILE="$INFRA_ROOT/state"
 LOCK_STATE_FILE="$INFRA_ROOT/locked"
+# screen_off_timeout from before the lock, so unlocking can put it back.
+TIMEOUT_FILE="$INFRA_ROOT/screen_timeout"
+# "<sysfs path> <brightness>" from before the lock: the unlock key does not
+# cycle the display, so nothing else would turn the backlight back on.
+BACKLIGHT_FILE="$INFRA_ROOT/backlight"
 MODE_FILE="$INFRA_ROOT/mode"
 DISPLAY_FILE="$INFRA_ROOT/display"
 WATCHER_SCRIPT="$INFRA_ROOT/watcher.sh"
@@ -258,14 +267,23 @@ kill_watcher() {
 }
 
 # Undo the virtual lock and the mirror-mode resize. Idempotent.
-restore_phone_state() {
-    local ti
-    if [ -f "$LOCK_STATE_FILE" ]; then
-        ti=$(find_touch_inhibit)
-        [ -n "$ti" ] && echo 0 > "$ti" 2>/dev/null
-        settings put system screen_off_timeout 300000 2>/dev/null
-        rm -f "$LOCK_STATE_FILE"
+# Undo the virtual lock only: touch, backlight, screen timeout. Idempotent.
+undo_lock() {
+    local ti t blp blv
+    [ -f "$LOCK_STATE_FILE" ] || return 0
+    ti=$(find_touch_inhibit)
+    [ -n "$ti" ] && echo 0 > "$ti" 2>/dev/null
+    if read -r blp blv < "$BACKLIGHT_FILE" 2>/dev/null && [ -n "$blv" ]; then
+        echo "$blv" > "$blp" 2>/dev/null
     fi
+    rm -f "$BACKLIGHT_FILE"
+    t=$(cat "$TIMEOUT_FILE" 2>/dev/null)
+    settings put system screen_off_timeout "${t:-300000}" 2>/dev/null
+    rm -f "$LOCK_STATE_FILE" "$TIMEOUT_FILE"
+}
+
+restore_phone_state() {
+    undo_lock
     if [ "$(saved_mode)" = "mirror" ]; then
         wm size reset 2>/dev/null
         wm density reset 2>/dev/null
@@ -833,7 +851,7 @@ start_anland_daemon() {
 }
 
 # =====================================================================
-# 4. POWER BUTTON WATCHER
+# 4. UNLOCK WATCHER (volume down, twice)
 # =====================================================================
 spawn_unlock_watcher() {
     kill_watcher
@@ -841,8 +859,16 @@ spawn_unlock_watcher() {
 #!/system/bin/sh
 
 LOCK_STATE_FILE="$LOCK_STATE_FILE"
+TIMEOUT_FILE="$TIMEOUT_FILE"
+UNLOCK_LOG="$INFRA_ROOT/unlock.log"
+BACKLIGHT_FILE="$BACKLIGHT_FILE"
 
 [ -f "\$LOCK_STATE_FILE" ] || exit 0
+
+# Seconds since boot, 10 ms resolution: enough to see where an unlock's
+# time goes, and it needs no date(1) format support.
+ts() { echo "\$(cut -d' ' -f1 /proc/uptime) \$1" >> "\$UNLOCK_LOG"; }
+ts "watcher started"
 
 TI=""
 for d in /sys/class/input/input*; do
@@ -853,16 +879,65 @@ for d in /sys/class/input/input*; do
     fi
 done
 
+# \$1: what triggered it, for the log; \$2: "wake" to wake the display too.
+unlock() {
+    ts "\$1"
+    if [ -n "\$TI" ] && [ -f "\$TI" ]; then
+        echo 0 > "\$TI" 2>/dev/null
+    fi
+    ts "touch enabled"
+    # Only when we wake the display ourselves. After POWER, Android puts the
+    # brightness back when it wakes the screen; writing it here as well would
+    # flash the display just before it goes to sleep.
+    if [ "\$2" = wake ] && read -r blp blv < "\$BACKLIGHT_FILE" 2>/dev/null && [ -n "\$blv" ]; then
+        echo "\$blv" > "\$blp" 2>/dev/null
+        ts "backlight restored"
+    fi
+    rm -f "\$BACKLIGHT_FILE"
+    rm -f "\$LOCK_STATE_FILE"
+    [ "\$2" = wake ] && ( input keyevent KEYCODE_WAKEUP 2>/dev/null ) &
+    # Nothing waits on the timeout, so it goes to the background.
+    t=\$(cat "\$TIMEOUT_FILE" 2>/dev/null)
+    ( settings put system screen_off_timeout "\${t:-300000}" 2>/dev/null
+      rm -f "\$TIMEOUT_FILE"
+      ts "timeout restored" ) &
+    exit 0
+}
+
+awake() { dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; }
+
+# Two volume-down presses within 0.6 s unlock. The power key unlocks too,
+# but Android gets that one as well: the screen was never really off, so it
+# goes to sleep now, and the next press wakes it the ordinary way. No wakeup
+# is sent for it: waking right after that sleep is what rebuilt the lock
+# screen and SystemUI and kept the phone unusable for seconds.
+#
+# Touch comes back only once the display is awake again. Re-enabling the
+# touchscreen while it was going to sleep, with the desktop focused on a
+# landscape external display, left HyperOS's launcher with a gesture strip
+# computed for landscape: the home swipe then only worked from the right
+# part of the bottom edge, until the launcher restarted.
+last=0
 getevent -l 2>/dev/null | while read -r line; do
     case "\$line" in
         *KEY_POWER*DOWN*)
-            input keyevent KEYCODE_WAKEUP 2>/dev/null
-            settings put system screen_off_timeout 300000 2>/dev/null
-            if [ -n "\$TI" ] && [ -f "\$TI" ]; then
-                echo 0 > "\$TI" 2>/dev/null
+            ts "power pressed"
+            n=0
+            while awake && [ \$n -lt 30 ]; do sleep 0.1; n=\$((n + 1)); done
+            ts "display asleep"
+            until awake; do sleep 0.5; done
+            ts "display awake"
+            sleep 1
+            unlock "power: after wake" nowake
+            ;;
+        *KEY_VOLUMEDOWN*DOWN*)
+            # /proc/uptime has two decimals: dropping the dot gives 1/100 s.
+            now=\$(cut -d' ' -f1 /proc/uptime); now=\${now%.*}\${now#*.}
+            if [ \$((now - last)) -gt 60 ]; then
+                last=\$now
+                continue
             fi
-            rm -f "\$LOCK_STATE_FILE"
-            exit 0
+            unlock "volume down twice" wake
             ;;
     esac
 done
@@ -874,7 +949,7 @@ WATCHER
         nohup "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
     fi
     echo $! > "$WATCHER_PID_FILE"
-    echo "[*] Power button watcher started (pid $(cat "$WATCHER_PID_FILE"))"
+    echo "[*] Unlock watcher started (pid $(cat "$WATCHER_PID_FILE"))"
 }
 
 # =====================================================================
@@ -928,11 +1003,22 @@ do_lock() {
     BL=$(find_backlight)
     if [ -n "$BL" ] && [ -f "$BL" ]; then
         echo "[*] Turning off backlight: $BL"
+        # Once per lock, like the timeout: a re-lock would save our own 0.
+        [ -s "$BACKLIGHT_FILE" ] || echo "$BL $(cat "$BL" 2>/dev/null)" > "$BACKLIGHT_FILE"
         echo 0 > "$BL" 2>/dev/null
     else
         echo "[!] Backlight path not found; skipping."
     fi
 
+    # Remembered once per lock: a re-lock would otherwise save our own
+    # 2147483647 as the value to go back to.
+    if [ ! -s "$TIMEOUT_FILE" ]; then
+        cur=$(settings get system screen_off_timeout 2>/dev/null)
+        case "$cur" in
+            ''|null|2147483647) ;;
+            *) echo "$cur" > "$TIMEOUT_FILE" ;;
+        esac
+    fi
     echo "[*] Setting screen_off_timeout to 2147483647..."
     settings put system screen_off_timeout 2147483647 2>/dev/null
 
@@ -954,7 +1040,21 @@ do_lock() {
     spawn_unlock_watcher
     echo ""
     echo "[*] Phone locked."
-    echo "[*] Press the POWER button to unlock."
+    echo "[*] Press VOLUME DOWN twice to unlock, or POWER (the screen then"
+    echo "[*] sleeps once; wake it as usual and touch works again)."
+}
+
+# The app's Unlock action. The watcher does the same on volume down twice;
+# stopping it first keeps the two from racing over the same files.
+do_unlock() {
+    kill_watcher
+    if ! is_locked; then
+        echo "[*] Phone is not locked."
+        return 0
+    fi
+    undo_lock
+    input keyevent KEYCODE_WAKEUP 2>/dev/null
+    echo "[*] Phone unlocked."
 }
 
 # =====================================================================
@@ -1918,7 +2018,7 @@ WRAPPER
             echo "[*]   $0 -t          -> stop the system"
             echo "[*]   $0 -u          -> delete everything"
         else
-            echo "[*]   $0 -k          -> virtual lock (press POWER to unlock)"
+            echo "[*]   $0 -k          -> virtual lock (volume down twice or power to unlock)"
             if [ "$MODE" = "mirror" ]; then
                 echo "[*]   $0 -e          -> resize to external"
                 echo "[*]   $0 -i          -> restore native size"
@@ -1987,15 +2087,9 @@ do_retarget() {
            || [ "$CUR_DESKTOP" != "$WANT_DESKTOP" ] \
            || [ "$CUR_NONRESIZE" != "$WANT_NONRESIZE" ] \
            || [ "$CUR_RESIZE" != "$WANT_RESIZE" ]; then
-            echo "[!] ================================================================"
-            echo "[!] $MODE mode needs different global display settings than are"
-            echo "[!] active right now, and those only take effect AFTER A REBOOT."
-            echo "[!] Staying in $CUR_MODE mode."
-            echo "[!]"
-            echo "[!] To switch to $MODE: stop the session, run '$0 -s --$MODE' once"
-            echo "[!] (it applies the settings and asks for a reboot), reboot, then"
-            echo "[!] start normally in $MODE mode."
-            echo "[!] ================================================================"
+            # One line on purpose: the app shows "[!]" lines as they are,
+            # and a banner or hand-wrapped text falls apart on a phone card.
+            echo "[!] Switching to $MODE mode needs different system display settings than $CUR_MODE mode uses, and those only take effect after a reboot. Stop the desktop, start it in $MODE mode, and reboot when asked."
             exit 3
         fi
     fi
@@ -2025,16 +2119,34 @@ do_retarget() {
     fi
     chmod 0644 "$MODE_FILE"
 
-    if [ "$MODE" = "extend" ]; then
+    echo "[*] Now in $MODE mode. Relaunch the frontend with --relaunch."
+}
+
+# Starts the frontend on the display the saved mode calls for. Separate
+# from --retarget because the old window has to be closed in between,
+# and only the app can close Anland's: an `am start` on a still-open
+# singleInstance activity just brings that one forward where it is, and
+# closing it afterwards took down the window that was meant to stay.
+do_relaunch() {
+    if ! is_running; then
+        echo "[!] No running session detected."
+        exit 1
+    fi
+    if [ "$(saved_mode)" = "extend" ]; then
+        EXTERNAL_DISPLAY_ID=$(detect_external_display_id)
+        if [ -z "$EXTERNAL_DISPLAY_ID" ]; then
+            echo "[!] No external display is connected."
+            exit 1
+        fi
         echo "[*] Launching Anland on external display (displayId=$EXTERNAL_DISPLAY_ID)..."
         /system/bin/am start -n "$ANLAND_APP_PACKAGE"/com.anland.termux.MainActivity \
             --display "$EXTERNAL_DISPLAY_ID" --windowingMode 1 -f 0x18000000
     else
-        echo "[*] Launching Anland frontend application..."
-        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/com.anland.termux.MainActivity
+        # Explicit: without --display the new window goes to whichever
+        # display has focus, which right after extend is the external one.
+        echo "[*] Launching Anland on the built-in display..."
+        /system/bin/am start -n "$ANLAND_APP_PACKAGE"/com.anland.termux.MainActivity --display 0
     fi
-
-    echo "[*] Done. Now in $MODE mode."
 }
 
 # =====================================================================
@@ -2047,8 +2159,10 @@ case "$ACTION" in
     stop)      do_stop ;;
     uninstall) do_uninstall ;;
     lock)      do_lock ;;
+    unlock)    do_unlock ;;
     exsize)    do_exsize ;;
     insize)    do_insize ;;
     retarget)  do_retarget ;;
+    relaunch)  do_relaunch ;;
     start)     do_start ;;
 esac

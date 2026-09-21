@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
                         innerPadding = innerPadding,
                         onOpenTerminal = { spec -> startActivity(TerminalActivity.intent(this, spec)) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
+                        onOpenDeviceInfo = { startActivity(Intent(this, DeviceInfoActivity::class.java)) },
                     )
                 }
             }

@@ -254,7 +254,7 @@ class XiaoianService : LifecycleService() {
             // processes are chroot processes like any other, so the script's
             // unmount_all() would find the mounts still busy, report
             // "[!] WARNING: mount(s) still present" and fail the stop.
-            TerminalSessions.closeAllFor(this@XiaoianService, currentDE)
+            TerminalSessions.endAllFor(this@XiaoianService, currentDE)
 
             val scriptPath = ScriptEnv.scriptPath(currentDE)
             // Teardown kills chroot processes and unmounts; it can sit quiet
@@ -279,18 +279,18 @@ class XiaoianService : LifecycleService() {
 
     /**
      * Switches a *running* session to a different mode without a full
-     * stop/start -- the close/reopen the compositor window on a different
-     * display trick, now that [LorieApp]'s dedup fix makes a quick
-     * close-then-reopen safe.
+     * stop/start, by closing the desktop window and reopening it where the
+     * new mode wants it.
      *
-     * The shell's `do_retarget` owns the parts that can be refused (the
-     * reboot-gated global settings mirror needs vs. extend/local) and, once
-     * past that, updates the mode file and relaunches the frontend itself
-     * on the right display. This function only closes whichever frontend
-     * instance is still around from *before* the switch -- necessary
-     * because Anland has no shell-reachable close path, only the static
-     * Kotlin instance -- and only after the shell step has already
-     * succeeded, so a refusal never touches the running session.
+     * Three steps, in this order:
+     *  1. `-r`: the script checks the reboot-gated global settings mirror
+     *     needs, swaps `wm size` for mirror, and records the new mode. A
+     *     refusal stops here, with the session untouched.
+     *  2. [closeFrontend], then wait for the old window to be destroyed.
+     *     Both frontends are singleInstance: an `am start` while the old
+     *     one is still open only brings it forward on the display it is
+     *     already on, and closing it afterwards closed the new one too.
+     *  3. `--relaunch`: a fresh `am start` on the display the mode calls for.
      */
     private fun retargetSession(mode: String, displayId: Int? = null, displaySize: String? = null) {
         val running = sessionManager.state.value as? SessionState.Running ?: return
@@ -304,33 +304,82 @@ class XiaoianService : LifecycleService() {
                 val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize)
                 val result = shellExecutor.run("$env $scriptPath -r --$mode")
                 if (!result.success) {
-                    sessionManager.updateRetargetError(result.error.ifEmpty { "Could not switch mode" })
+                    sessionManager.updateRetargetError(cleanScriptError(result.error, "Could not switch mode"))
                     return@launch
                 }
-
-                closeFrontend()
                 currentMode = mode
                 sessionManager.updateState(SessionState.Running(mode, currentDE, running.isLocked))
                 updateNotification("Session running")
+
+                closeFrontend()
+                waitForFrontendClosed()
+
+                val relaunch = shellExecutor.run("$env $scriptPath --relaunch")
+                if (!relaunch.success) {
+                    sessionManager.updateRetargetError(
+                        cleanScriptError(relaunch.error, "Switched, but the desktop window did not open") +
+                            "\nUse OPEN DESKTOP to open it."
+                    )
+                }
             } finally {
                 sessionManager.updateRetargeting(false)
             }
         }
     }
 
-    private fun lockPhone() {
-        lifecycleScope.launch {
-            val scriptPath = ScriptEnv.scriptPath(currentDE)
-            shellExecutor.run("${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -k")
-            sessionManager.updateState(SessionState.Running(currentMode, currentDE, true))
-            updateNotification("Session running (Phone Locked)")
+    /**
+     * Waits until neither frontend has a task left. The task, not the
+     * activity, is what matters: `am start` reuses a singleInstance task for
+     * as long as it exists, wherever it is.
+     */
+    private suspend fun waitForFrontendClosed() {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val frontends = setOf("com.termux.x11.MainActivity", "com.anland.termux.MainActivity")
+        fun open() = runCatching {
+            am.appTasks.any { it.taskInfo.baseActivity?.className in frontends }
+        }.getOrDefault(false)
+        val deadline = SystemClock.elapsedRealtime() + 3_000
+        while (open() && SystemClock.elapsedRealtime() < deadline) {
+            kotlinx.coroutines.delay(100)
         }
     }
 
+    /** The script's "[!]" lines without the marker, for display on a card. */
+    private fun cleanScriptError(error: String, fallback: String): String =
+        error.lines()
+            .map { it.trim().removePrefix("[!]").trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+            .ifEmpty { fallback }
+
+    private fun lockPhone() {
+        lifecycleScope.launch {
+            val scriptPath = ScriptEnv.scriptPath(currentDE)
+            if (shellExecutor.run("${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -k").success) {
+                setLocked(true)
+            }
+        }
+    }
+
+    /** The notification's Unlock action; volume down twice does the same. */
     private fun unlockPhone() {
-        // Handled by the script's watcher or we can manually kill the lock
-        // For phase 1, unlocking typically requires pressing power button (script handles it)
-        // If we want a button, we can send a broadcast or kill the watcher.
+        lifecycleScope.launch {
+            val scriptPath = ScriptEnv.scriptPath(currentDE)
+            shellExecutor.run("${ScriptEnv.prefix(this@XiaoianService)} $scriptPath --unlock")
+            setLocked(false)
+        }
+    }
+
+    /**
+     * The lock is mostly undone by the script's own watcher, which the app
+     * never hears from, so the watchdog calls this too: otherwise the
+     * notification kept offering "Unlock" long after the phone was unlocked.
+     */
+    private fun setLocked(locked: Boolean) {
+        val running = sessionManager.state.value as? SessionState.Running ?: return
+        if (running.isLocked == locked) return
+        sessionManager.updateState(running.copy(isLocked = locked))
+        updateNotification(if (locked) "Session running (Phone Locked)" else "Session running")
     }
 
     /** The notification's terminal action: a shell in the running desktop's chroot. */
@@ -374,12 +423,20 @@ class XiaoianService : LifecycleService() {
             // One cheap check every five seconds on the shared root shell. This
             // used to be a `while true` loop inside a root shell of its own --
             // a whole extra Magisk prompt just to watch a file.
-            val alive = "p=\$(awk '{print \$1}' $stateFile 2>/dev/null); " +
-                "[ -n \"\$p\" ] && [ -d \"/proc/\$p\" ]"
+            val lockFile = "${ScriptEnv.infraRoot(currentDE)}/locked"
+            // Also reports the lock, which the script's watcher lifts on its own.
+            // A subshell: this runs in the shared root shell, where a bare
+            // `exit` would end the shell itself.
+            val alive = "(p=\$(awk '{print \$1}' $stateFile 2>/dev/null); " +
+                "[ -n \"\$p\" ] && [ -d \"/proc/\$p\" ] || exit 1; " +
+                "[ -f $lockFile ] && echo locked || echo unlocked)"
             try {
                 while (isActive) {
                     kotlinx.coroutines.delay(5_000)
-                    if (!shellExecutor.run(alive).success) break
+                    var lockState: String? = null
+                    if (!shellExecutor.run(alive) { lockState = it.trim() }.success) break
+                    val locked = lockState == "locked"
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { setLocked(locked) }
                 }
                 
                 // Once the process exits, it means the session is dead
@@ -390,11 +447,11 @@ class XiaoianService : LifecycleService() {
                     audioPlayer?.stop()
                     audioPlayer = null
                     closeFrontend()
-                    // The desktop's own teardown already killed everything in
-                    // its chroot, terminals included, so this is bookkeeping
-                    // rather than prevention -- but without it the store would
-                    // keep listing sessions whose shells are long gone.
-                    TerminalSessions.closeAllFor(this@XiaoianService, currentDE)
+                    // The desktop's own teardown normally killed its chroot
+                    // terminals already; this catches any it missed. Either
+                    // way their tabs stay, struck through, so a logout or crash
+                    // does not take their output with it.
+                    TerminalSessions.endAllFor(this@XiaoianService, currentDE)
                     sessionManager.updateState(SessionState.Idle)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
@@ -442,10 +499,22 @@ class XiaoianService : LifecycleService() {
 
         if (sessionManager.state.value is SessionState.Running && currentMode != "local") {
             val isLocked = (sessionManager.state.value as SessionState.Running).isLocked
-            val lockIntent = Intent(this, XiaoianService::class.java).apply { 
-                action = if (isLocked) ACTION_UNLOCK else ACTION_LOCK 
+            // Locking asks first (LockConfirmActivity); only that dialog
+            // sends ACTION_LOCK.
+            val lockPending = if (isLocked) {
+                PendingIntent.getService(
+                    this, 2,
+                    Intent(this, XiaoianService::class.java).apply { action = ACTION_UNLOCK },
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+            } else {
+                PendingIntent.getActivity(
+                    this, 2,
+                    Intent(this, com.xiaoian.app.LockConfirmActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
             }
-            val lockPending = PendingIntent.getService(this, 2, lockIntent, PendingIntent.FLAG_IMMUTABLE)
             builder.addAction(0, if (isLocked) "Unlock" else "Lock", lockPending)
         }
         

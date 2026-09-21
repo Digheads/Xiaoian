@@ -57,6 +57,20 @@
             android:taskAffinity=".XiaoianSettings"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".DeviceInfoActivity"
+            android:exported="false" />
+
+        <!-- Its own empty affinity: from the notification it must not bring
+             the dashboard up behind the dialog. -->
+        <activity
+            android:name=".LockConfirmActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Xiaoian.Transparent"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
         <!-- Foreground service -->
         <service
             android:name=".service.XiaoianService"

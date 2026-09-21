@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -29,6 +30,7 @@ fun DashboardScreen(
     viewModel: DashboardViewModel = viewModel(),
     onOpenTerminal: (SessionSpec?) -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenDeviceInfo: () -> Unit = {},
 ) {
     val state by viewModel.sessionState.collectAsState()
     val setup by viewModel.setupProgress.collectAsState()
@@ -65,6 +67,14 @@ fun DashboardScreen(
         if (!hasExternalDisplay && selectedMode != "local") selectedMode = "local"
     }
     var showUninstallDialog by remember { mutableStateOf<String?>(null) }
+    // Once, on first launch. The info button opens the full screen instead.
+    var showDeviceNotice by rememberSaveable { mutableStateOf(viewModel.showDeviceNoticeOnStart) }
+    if (showDeviceNotice) {
+        DeviceSupportDialog(viewModel.deviceReport) {
+            showDeviceNotice = false
+            viewModel.markDeviceNoticeShown()
+        }
+    }
     
     val scrollState = rememberScrollState()
 
@@ -80,8 +90,9 @@ fun DashboardScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Balances the gear so the title stays centred.
-            Spacer(modifier = Modifier.width(48.dp))
+            IconButton(onClick = onOpenDeviceInfo) {
+                Icon(Icons.Outlined.Info, contentDescription = "Device support")
+            }
             Row(
                 modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.Center,
@@ -117,9 +128,9 @@ fun DashboardScreen(
                 modifier = Modifier.padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ModeOption("Extend", "extend", selectedMode, hasExternalDisplay) { selectedMode = it }
+                ModeOption("Extend", "extend", selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
-                ModeOption("Mirror", "mirror", selectedMode, hasExternalDisplay) { selectedMode = it }
+                ModeOption("Mirror", "mirror", selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
                 ModeOption("Local", "local", selectedMode, true) { selectedMode = it }
             }
@@ -160,6 +171,7 @@ fun DashboardScreen(
             
             Button(
                 onClick = { viewModel.startSession(selectedMode, selectedDE, selectedDisplay) },
+                enabled = !storageLoading,
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
                 Text("START DESKTOP")
@@ -174,6 +186,7 @@ fun DashboardScreen(
         // screen asks which one -- or goes straight back to what is open.
         OutlinedButton(
             onClick = { onOpenTerminal(null) },
+            enabled = !storageLoading,
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
             Text("TERMINAL")
@@ -192,7 +205,8 @@ fun DashboardScreen(
             Text("Environments", style = MaterialTheme.typography.titleMedium)
             IconButton(
                 onClick = { viewModel.refreshStorage() },
-                enabled = !storageLoading
+                // Sizes are measured only with no desktop up; see refreshStorage.
+                enabled = !storageLoading && state is SessionState.Idle && !uninstallState.inProgress
             ) {
                 if (storageLoading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -262,7 +276,9 @@ fun DashboardScreen(
             retargetError = retargetError,
             onUninstall = { showUninstallDialog = "xfce" },
             onOpenDesktop = { openDesktop("xfce") },
-            onLockPhone = { viewModel.lockPhone() },
+            onLockPhone = {
+                context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
+            },
             onStopSession = { viewModel.stopSession() },
             onRetarget = { mode, display -> viewModel.retarget(mode, display) },
         )
@@ -284,7 +300,9 @@ fun DashboardScreen(
             retargetError = retargetError,
             onUninstall = { showUninstallDialog = "kde" },
             onOpenDesktop = { openDesktop("kde") },
-            onLockPhone = { viewModel.lockPhone() },
+            onLockPhone = {
+                context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
+            },
             onStopSession = { viewModel.stopSession() },
             onRetarget = { mode, display -> viewModel.retarget(mode, display) },
         )
@@ -364,7 +382,7 @@ fun InstalledEnvironmentCard(
                 if (info?.installed == true && sessionState is SessionState.Idle) {
                     IconButton(
                         onClick = onUninstall,
-                        enabled = !uninstallInProgress
+                        enabled = !uninstallInProgress && !loading
                     ) {
                         Icon(
                             Icons.Default.Delete,
@@ -380,7 +398,9 @@ fun InstalledEnvironmentCard(
             } else if (info?.installed == true) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    StorageInfo.formatSize(info.sizeBytes),
+                    // Zero until measured: a desktop installed by the running
+                    // session is only sized once it stops.
+                    if (info.sizeBytes > 0) StorageInfo.formatSize(info.sizeBytes) else "Installed",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -434,11 +454,23 @@ fun InstalledEnvironmentCard(
                         }
                         val retargetDisplay = externalDisplays.firstOrNull { it.id == retargetDisplayId }
                         val hasDisplay = externalDisplays.isNotEmpty()
+                        // Extend and mirror need different global settings that
+                        // only apply after a reboot, so a running session can
+                        // switch only to the one the phone is set up for.
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        val configured = remember(sessionState.mode) {
+                            com.xiaoian.app.device.DeviceSupport.configuredDisplayMode(context)
+                        }
+                        fun reasonFor(mode: String): String? = when {
+                            !hasDisplay -> NO_DISPLAY
+                            mode != configured -> "Switching to $mode needs a reboot: restart the desktop in $mode mode."
+                            else -> null
+                        }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            ModeOption("Extend", "extend", retargetMode, hasDisplay) { retargetMode = it }
+                            ModeOption("Extend", "extend", retargetMode, reasonFor("extend") == null, reasonFor("extend")) { retargetMode = it }
                             Spacer(modifier = Modifier.width(8.dp))
-                            ModeOption("Mirror", "mirror", retargetMode, hasDisplay) { retargetMode = it }
+                            ModeOption("Mirror", "mirror", retargetMode, reasonFor("mirror") == null, reasonFor("mirror")) { retargetMode = it }
                             Spacer(modifier = Modifier.width(8.dp))
                             ModeOption("Local", "local", retargetMode, true) { retargetMode = it }
                         }
@@ -545,17 +577,33 @@ private fun ModeOption(
     value: String,
     selected: String,
     enabled: Boolean,
+    disabledReason: String? = null,
     onSelect: (String) -> Unit,
 ) {
-    RadioButton(
-        selected = selected == value,
-        enabled = enabled,
-        onClick = { onSelect(value) }
-    )
-    Text(
-        label,
-        // Material's disabled-content alpha; the Row centres it vertically.
-        color = if (enabled) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-    )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // The Row takes the tap, not the RadioButton: a disabled button swallows
+    // nothing and reports nothing, and a greyed-out option should say why.
+    Row(
+        modifier = Modifier.clickable {
+            if (enabled) onSelect(value)
+            else if (disabledReason != null)
+                android.widget.Toast.makeText(context, disabledReason, android.widget.Toast.LENGTH_LONG).show()
+        },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(
+            selected = selected == value,
+            enabled = enabled,
+            onClick = null,
+        )
+        Text(
+            label,
+            // Material's disabled-content alpha.
+            color = if (enabled) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            modifier = Modifier.padding(start = 4.dp, end = 8.dp),
+        )
+    }
 }
+
+private const val NO_DISPLAY = "Connect an external display to use extend or mirror."

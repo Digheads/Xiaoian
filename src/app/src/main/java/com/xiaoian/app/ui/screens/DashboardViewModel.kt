@@ -17,6 +17,8 @@ import com.xiaoian.app.shell.ShellExecutor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 data class UninstallState(
@@ -53,6 +55,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val lastDe: String = AppPrefs.lastDe(application)
     val lastMode: String = AppPrefs.lastMode(application)
 
+    /** Evaluated once: nothing it looks at changes while the app runs. */
+    val deviceReport = com.xiaoian.app.device.DeviceSupport.evaluate()
+    val showDeviceNoticeOnStart: Boolean = !AppPrefs.deviceNoticeShown(application)
+
+    fun markDeviceNoticeShown() = AppPrefs.setDeviceNoticeShown(getApplication())
+
     /**
      * Displays the desktop could be sent to, kept current while the dashboard
      * is open: the picker is most useful exactly when someone is plugging
@@ -79,6 +87,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         refreshStorage()
+        // A desktop is installed as part of its first start, and removed files
+        // can change size while it runs, so re-read after every transition
+        // into a settled state -- not on each progress tick.
+        viewModelScope.launch {
+            sessionState
+                .distinctUntilChanged { a, b -> a::class == b::class }
+                .drop(1)
+                .collect { state ->
+                    when (state) {
+                        // Walking a live chroot with du is what froze the
+                        // phone; a running desktop is installed by definition.
+                        is SessionState.Running -> markInstalled(state.de)
+                        is SessionState.Idle, is SessionState.Error -> refreshStorage()
+                        else -> {}
+                    }
+                }
+        }
     }
 
     /**
@@ -129,18 +154,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Blanks and locks the phone's own screen while the desktop keeps running
-     * on the external display (the scripts' `-k`). Meaningless in local mode,
-     * where the desktop *is* the phone screen.
+     * Only while no desktop is starting, running or stopping: `du` over a
+     * mounted chroot competes with the session for I/O, and the dashboard
+     * blocks start, delete and the terminal for as long as it runs.
      */
-    fun lockPhone() {
-        val intent = Intent(getApplication(), XiaoianService::class.java).apply {
-            action = XiaoianService.ACTION_LOCK
-        }
-        getApplication<Application>().startService(intent)
-    }
-
     fun refreshStorage() {
+        if (sessionState.value !is SessionState.Idle && sessionState.value !is SessionState.Error) return
+        if (_storageLoading.value) return
         viewModelScope.launch {
             _storageLoading.value = true
             _xfceStorage.value = queryStorage(XFCE_INFRA)
@@ -221,10 +241,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         return StorageInfo(sizeBytes = getDirSize(infraRoot), installed = true)
     }
 
+    private fun markInstalled(de: String) {
+        val flow = if (de == "kde") _kdeStorage else _xfceStorage
+        flow.value = (flow.value ?: StorageInfo()).copy(installed = true)
+    }
+
     private suspend fun getDirSize(path: String): Long {
         // du -sb prints "<bytes>\t<path>"
         var size = 0L
-        shellExecutor.run("du -sb $path 2>/dev/null | head -1") { line ->
+        shellExecutor.run("du -sxb $path 2>/dev/null | head -1") { line ->
             val parts = line.trim().split("\t")
             if (parts.isNotEmpty()) {
                 size = parts[0].toLongOrNull() ?: size

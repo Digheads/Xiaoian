@@ -36,6 +36,7 @@ object AppPrefs {
 
     private const val KEY_LAST_DE = "last_de"
     private const val KEY_LAST_MODE = "last_mode"
+    private const val KEY_DEVICE_NOTICE_SHOWN = "device_notice_shown"
 
     const val TEXT_SIZE_MIN = 8
     const val TEXT_SIZE_MAX = 36
@@ -113,5 +114,13 @@ object AppPrefs {
             .putString(KEY_LAST_DE, de)
             .putString(KEY_LAST_MODE, mode)
             .apply()
+    }
+
+    /** Whether the first-launch device support notice has been dismissed. */
+    fun deviceNoticeShown(context: Context): Boolean =
+        ours(context).getBoolean(KEY_DEVICE_NOTICE_SHOWN, false)
+
+    fun setDeviceNoticeShown(context: Context) {
+        ours(context).edit().putBoolean(KEY_DEVICE_NOTICE_SHOWN, true).apply()
     }
 }

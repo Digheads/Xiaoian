@@ -38,6 +38,23 @@ You will be asked for root the first time the app needs it, and normally not
 again: the app keeps a single root shell open for as long as it runs, instead of
 launching `su` per command.
 
+### Supported devices
+
+The first time the app opens it checks the phone and says whether it is
+supported. The **ⓘ** button at the top left of the dashboard opens a screen
+with the same check, the display settings extend and mirror mode need together
+with their current values, and the list below.
+
+| | |
+|---|---|
+| **Tested** | Xiaomi Redmi Note 13 (4G) — Snapdragon 685 / Adreno 610, HyperOS 2 (Android 15) |
+| **Expected to work** | arm64 phones with a Snapdragon (Adreno) GPU, Android 11+, rooted with Magisk |
+| **Limited** | Mali, Xclipse, MediaTek and Tensor (Pixel) GPUs: XFCE only with software rendering, no KDE. Kernels before 5.11: the virtual lock cannot disable the touchscreen |
+| **Untested** | Samsung (DeX), KernelSU, APatch |
+| **Not supported** | 32-bit or x86 devices, phones without root |
+
+KDE needs Android 11; XFCE runs from Android 9.
+
 ---
 
 ## First start
@@ -68,8 +85,11 @@ The session survives leaving the app. A notification keeps it visible with
 
 In extend and mirror mode the notification (and the running-session card) offers
 **Lock**, which blanks and locks the phone while the desktop keeps running on
-the external display. It is hidden in local mode, where the phone screen *is*
-the desktop.
+the external display. It asks first, and says how to get back: press
+**Volume Down twice**, quickly (or use **Unlock** in the notification). Each
+press also lowers the volume by a step. **Power** unlocks too, but the phone
+treats it as a real screen-off: wake it as usual, and touch works again. Lock is hidden in local mode, where the
+phone screen *is* the desktop.
 
 **Extend and mirror are greyed out until an external display is connected** —
 both put the desktop on a screen that has to exist, and the scripts refuse the
@@ -118,7 +138,9 @@ the three you want. **Long press a tab** for its menu:
 - **Close** — ends the session and everything it started
 
 A session that exits on its own keeps its tab, greyed out with its name struck
-through, so you can still read why. Press **Enter** in it to close it.
+through, so you can still read why. The same goes for the terminals of a
+desktop that stops, logs out or crashes: their shells end with it, but the tabs
+and their output stay. Press **Enter** in such a tab to close it.
 
 ### The key bar
 

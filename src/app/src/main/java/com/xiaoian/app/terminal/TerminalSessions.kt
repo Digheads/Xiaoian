@@ -158,6 +158,24 @@ object TerminalSessions {
     suspend fun closeAllFor(context: Context, de: String) =
         closeGroup(context, SessionSpec.DesktopChroot(de).group)
 
+    /**
+     * Like [closeAllFor], but the tabs stay: every shell in the desktop's
+     * chroot is killed -- the stop needs them gone just as much -- and each
+     * tab is then left struck through by [StoreClient.onSessionFinished], with
+     * its output still there to read. A logout or crash should not take away
+     * what someone was in the middle of reading.
+     *
+     * A session whose view never laid out has no emulator, so nothing would
+     * ever mark it finished; that one is closed outright.
+     */
+    suspend fun endAllFor(context: Context, de: String) = withContext(Dispatchers.IO) {
+        val group = SessionSpec.DesktopChroot(de).group
+        _sessions.value.filter { it.spec.group == group && it.isRunning }.forEach { session ->
+            if (session.terminal.emulator == null) close(context, session)
+            else RootPty.killSession(session.pty.sid)
+        }
+    }
+
     suspend fun closeAllLocal(context: Context) =
         closeGroup(context, SessionSpec.Local.group)
 
