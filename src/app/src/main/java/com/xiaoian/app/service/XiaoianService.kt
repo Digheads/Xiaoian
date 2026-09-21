@@ -38,6 +38,7 @@ class XiaoianService : LifecycleService() {
         const val ACTION_LOCK = "com.xiaoian.app.LOCK"
         const val ACTION_UNLOCK = "com.xiaoian.app.UNLOCK"
         const val ACTION_TERMINAL = "com.xiaoian.app.TERMINAL"
+        const val ACTION_RETARGET = "com.xiaoian.app.RETARGET"
     }
 
     val sessionManager = SessionManagerProvider.sessionManager
@@ -73,6 +74,11 @@ class XiaoianService : LifecycleService() {
             ACTION_LOCK -> lockPhone()
             ACTION_UNLOCK -> unlockPhone()
             ACTION_TERMINAL -> openTerminal()
+            ACTION_RETARGET -> retargetSession(
+                mode = intent.getStringExtra("mode") ?: return START_STICKY,
+                displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
+                displaySize = intent.getStringExtra("displaySize"),
+            )
         }
         return START_STICKY
     }
@@ -268,6 +274,47 @@ class XiaoianService : LifecycleService() {
             sessionManager.updateState(SessionState.Idle)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+        }
+    }
+
+    /**
+     * Switches a *running* session to a different mode without a full
+     * stop/start -- the close/reopen the compositor window on a different
+     * display trick, now that [LorieApp]'s dedup fix makes a quick
+     * close-then-reopen safe.
+     *
+     * The shell's `do_retarget` owns the parts that can be refused (the
+     * reboot-gated global settings mirror needs vs. extend/local) and, once
+     * past that, updates the mode file and relaunches the frontend itself
+     * on the right display. This function only closes whichever frontend
+     * instance is still around from *before* the switch -- necessary
+     * because Anland has no shell-reachable close path, only the static
+     * Kotlin instance -- and only after the shell step has already
+     * succeeded, so a refusal never touches the running session.
+     */
+    private fun retargetSession(mode: String, displayId: Int? = null, displaySize: String? = null) {
+        val running = sessionManager.state.value as? SessionState.Running ?: return
+        if (mode == currentMode) return
+
+        sessionManager.updateRetargetError(null)
+        sessionManager.updateRetargeting(true)
+        lifecycleScope.launch {
+            try {
+                val scriptPath = ScriptEnv.scriptPath(currentDE)
+                val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize)
+                val result = shellExecutor.run("$env $scriptPath -r --$mode")
+                if (!result.success) {
+                    sessionManager.updateRetargetError(result.error.ifEmpty { "Could not switch mode" })
+                    return@launch
+                }
+
+                closeFrontend()
+                currentMode = mode
+                sessionManager.updateState(SessionState.Running(mode, currentDE, running.isLocked))
+                updateNotification("Session running")
+            } finally {
+                sessionManager.updateRetargeting(false)
+            }
         }
     }
 

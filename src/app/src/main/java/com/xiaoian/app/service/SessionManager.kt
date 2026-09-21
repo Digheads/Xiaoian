@@ -20,11 +20,32 @@ class SessionManager {
     /** Step list and progress of the current start; meaningful while [state] is Starting. */
     val setup: StateFlow<SetupProgress> = _setup.asStateFlow()
 
+    private val _retargeting = MutableStateFlow(false)
+    /** True while a running session is being switched to a different mode. */
+    val retargeting: StateFlow<Boolean> = _retargeting.asStateFlow()
+
+    private val _retargetError = MutableStateFlow<String?>(null)
+    /**
+     * Why the last retarget was refused -- e.g. the reboot-gated global
+     * settings mismatch `do_retarget` reports -- or null once cleared. The
+     * session itself is untouched when this is set: a refusal never moves
+     * [state] out of the mode it was already running in.
+     */
+    val retargetError: StateFlow<String?> = _retargetError.asStateFlow()
+
     fun updateState(newState: SessionState) {
         _state.value = newState
     }
 
     fun updateSetup(progress: SetupProgress) {
         _setup.value = progress
+    }
+
+    fun updateRetargeting(active: Boolean) {
+        _retargeting.value = active
+    }
+
+    fun updateRetargetError(message: String?) {
+        _retargetError.value = message
     }
 }

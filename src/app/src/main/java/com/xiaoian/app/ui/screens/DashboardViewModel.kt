@@ -29,6 +29,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     val sessionState: StateFlow<SessionState> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.state
     val setupProgress: StateFlow<SetupProgress> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.setup
+    val retargeting: StateFlow<Boolean> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.retargeting
+    val retargetError: StateFlow<String?> = com.xiaoian.app.service.SessionManagerProvider.sessionManager.retargetError
 
     private val shellExecutor = ShellExecutor()
 
@@ -97,6 +99,26 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
         getApplication<Application>().startForegroundService(intent)
+    }
+
+    /**
+     * Switches an already-running session to a different mode/display in
+     * place. See [XiaoianService.retargetSession] -- a refusal (e.g. the
+     * reboot-gated settings mirror needs) surfaces through [retargetError]
+     * and leaves the session running exactly as it was.
+     */
+    fun retarget(mode: String, display: ExternalDisplay? = null) {
+        val running = sessionState.value as? SessionState.Running ?: return
+        AppPrefs.setLastSelection(getApplication(), running.de, mode)
+        val intent = Intent(getApplication(), XiaoianService::class.java).apply {
+            action = XiaoianService.ACTION_RETARGET
+            putExtra("mode", mode)
+            if (mode != "local" && display != null) {
+                putExtra("displayId", display.id)
+                putExtra("displaySize", display.size)
+            }
+        }
+        getApplication<Application>().startService(intent)
     }
 
     fun stopSession() {
@@ -169,7 +191,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     "$env $scriptPath -u",
                     idleTimeoutMs = RootShell.NO_TIMEOUT,
                 ) { line ->
-                    _uninstallState.value = _uninstallState.value.copy(output = line)
+                    // The script pads these for a terminal table ("      etc
+                    // ... done"); trim so the card shows a clean line instead
+                    // of leading/trailing whitespace around the path.
+                    _uninstallState.value = _uninstallState.value.copy(output = line.trim())
                 }
             } finally {
                 uninstallShell.close()

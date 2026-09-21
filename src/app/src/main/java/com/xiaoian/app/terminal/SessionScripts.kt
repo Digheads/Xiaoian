@@ -87,8 +87,10 @@ object SessionScripts {
     private val MOUNT_HELPERS = "$IS_MOUNTPOINT\n\n$ENSURE_MOUNT"
 
     /**
-     * Unmounts everything at or under [target], deepest first, and succeeds
-     * only if nothing is left.
+     * The body shared by [unmountTree] and [wipeTree]: unmounts everything at
+     * or under [target], deepest first, leaving a `mounted()` predicate in
+     * scope so a caller can check the final state itself rather than trust
+     * this function's own idea of whether it worked.
      *
      * Two rules make this what it is, both learned on the device:
      *
@@ -103,20 +105,20 @@ object SessionScripts {
      *   and the phone loses every binary until it is rebooted. Taking each
      *   mount out of its peer group first is what makes this safe.
      *
-     * Unlike the checks above this one *has* to work by path, because it has to
-     * enumerate submounts it does not know the names of. So it matches both
-     * spellings of the app's data directory: `umount` resolves either, but
-     * `/proc/mounts` only ever lists the kernel's own, which inside the app's
-     * mount namespace is `/data/data/<pkg>` even though the app hands us
-     * `/data/user/0/<pkg>`. See [IS_MOUNTPOINT]. Matching only the app's
-     * spelling meant this found nothing and quietly left the whole
-     * `/mnt/android` tree behind on every run.
-     *
-     * Wrapped in a subshell because callers run it inside the long-lived root
-     * shell, where a bare `exit` would take that shell down.
+     * This *has* to work by path, because it has to enumerate submounts it
+     * does not know the names of. So it matches both spellings of the app's
+     * data directory: `umount` resolves either, but `/proc/mounts` only ever
+     * lists the kernel's own, which inside the app's mount namespace is
+     * `/data/data/<pkg>` even though the app hands us `/data/user/0/<pkg>`.
+     * See [IS_MOUNTPOINT]. Matching only the app's spelling meant this found
+     * nothing and quietly left the whole `/mnt/android` tree mounted -- which
+     * is exactly the state that made [wipeTree] necessary in the first place:
+     * a caller trusting a *separate* "did it unmount?" check before running
+     * its own `rm -rf` is one bug away from recursing that delete straight
+     * through a live bind of the real filesystem. Verified on the device, more
+     * than once.
      */
-    fun unmountTree(target: String): String = """
-        (
+    private fun unmountBody(target: String): String = """
         t='$target'
         case "${'$'}t" in
             /data/user/0/*) a="/data/data/${'$'}{t#/data/user/0/}" ;;
@@ -134,7 +136,49 @@ object SessionScripts {
             done
             i=${'$'}((i + 1))
         done
+    """.trimIndent()
+
+    /**
+     * Unmounts everything at or under [target] and succeeds only if nothing is
+     * left. See [unmountBody] for how.
+     *
+     * Wrapped in a subshell because callers run it inside the long-lived root
+     * shell, where a bare `exit` would take that shell down.
+     */
+    fun unmountTree(target: String): String = """
+        (
+        ${unmountBody(target)}
         ! mounted
+        )
+    """.trimIndent()
+
+    /**
+     * Unmounts everything at or under [target], then deletes it -- but only if,
+     * immediately before the delete and in the same shell invocation, nothing
+     * is mounted there any more.
+     *
+     * This exists as its own function, rather than "call [unmountTree], check
+     * the Kotlin `Boolean`, then run a second `rm -rf` command" (which is what
+     * this replaced), because that pattern has a gap: two separate root-shell
+     * round trips, with nothing stopping a future change to either side from
+     * quietly reintroducing the exact bug this fixes. A bug in the *check* used
+     * to make `wipeRootfs` believe [ANDROID_MOUNT] -- a recursive bind of `/`
+     * -- was already gone, so its `rm -rf` walked straight through the live
+     * mount into the real filesystem. Here the check and the delete are the
+     * same `if`, in the same script, so there is no such gap to reintroduce.
+     *
+     * Deliberately still checks even though [unmountBody] already retries: a
+     * *caller* must never be the only thing standing between "still mounted"
+     * and `rm -rf`, no matter how good the unmount loop above it is.
+     */
+    fun wipeTree(target: String): String = """
+        (
+        ${unmountBody(target)}
+        if mounted; then
+            echo "[!] refusing to delete ${'$'}t: still mounted"
+            exit 1
+        fi
+        rm -rf "${'$'}t"
         )
     """.trimIndent()
 

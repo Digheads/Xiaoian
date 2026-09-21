@@ -37,7 +37,7 @@ fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
         // of the card.
         Text(
             progress.detail.ifBlank { progress.current?.title ?: "Starting session..." },
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )

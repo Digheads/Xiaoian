@@ -73,10 +73,11 @@ Actions:
   -k, --lock        Virtually lock the phone (extend/mirror mode)
   -e, --exsize      (mirror only) Resize framework to external display
   -i, --insize      (mirror only) Restore framework to phone resolution
+  -r, --retarget    Switch a running session to a different mode
   -v, --version     Show version
   -h, --help        Show this help
 
-Modes (only with --start, only one may be given):
+Modes (only with --start or --retarget, only one may be given):
   -x, --extend      (default) Extended desktop on external display
   -m, --mirror      Mirror phone screen to external display
   -l, --local       Run on the built-in phone screen
@@ -97,6 +98,7 @@ handle_short() {
         k) ACTION="lock" ;;
         e) ACTION="exsize" ;;
         i) ACTION="insize" ;;
+        r) ACTION="retarget" ;;
         v) ACTION="version" ;;
         m) [ "$MODE_SET" = "1" ] && { echo "[!] Only one mode may be specified."; exit 1; }; MODE="mirror"; MODE_SET=1 ;;
         x) [ "$MODE_SET" = "1" ] && { echo "[!] Only one mode may be specified."; exit 1; }; MODE="extend"; MODE_SET=1 ;;
@@ -114,6 +116,7 @@ for arg in "$@"; do
         --lock)      ACTION="lock" ;;
         --exsize)    ACTION="exsize" ;;
         --insize)    ACTION="insize" ;;
+        --retarget)  ACTION="retarget" ;;
         --version)   ACTION="version" ;;
         --mirror|--extend|--local)
             if [ "$MODE_SET" = "1" ]; then
@@ -413,8 +416,15 @@ unmount_all() {
 teardown_session() {
     kill_watcher
     unmount_all
+    # Captured explicitly: without this, the function's exit status is
+    # whatever restore_phone_state/rm happen to return, not unmount_all's --
+    # so `teardown_session || refuse` at the uninstall call site never
+    # actually refused anything, no matter how busy the mounts were. See
+    # ARCHITECTURE.md.
+    rc=$?
     restore_phone_state
     rm -f "$STATE_FILE"
+    return "$rc"
 }
 LIB
     } > "$LIB_FILE.tmp" && mv -f "$LIB_FILE.tmp" "$LIB_FILE"
@@ -933,6 +943,19 @@ do_uninstall() {
         echo "[!] Refusing to delete: mount(s) still active under $DEBIAN_ROOTFS."
         exit 1
     }
+
+    # A second, independent check, right before the destructive walk below and
+    # not reliant on teardown_session's exit code: this is an `rm -rf` that can
+    # reach real user files through a live bind mount (internal storage is
+    # bound at $DEBIAN_ROOTFS/mnt/android/storage/emulated/0, and toybox `rm`
+    # has no --one-file-system), so nothing short of re-verifying against
+    # /proc/mounts one more time, in the same breath as the delete, is enough.
+    # See ARCHITECTURE.md.
+    if grep -q " $DEBIAN_ROOTFS/" /proc/mounts 2>/dev/null; then
+        echo "[!] Refusing to delete: mount(s) still active under $DEBIAN_ROOTFS."
+        grep " $DEBIAN_ROOTFS/" /proc/mounts
+        exit 1
+    fi
 
     if [ -d "$DEBIAN_ROOTFS" ]; then
         echo "[*] Counting files (this can take a few seconds)..."
@@ -1577,7 +1600,111 @@ WRAPPER
 }
 
 # =====================================================================
-# 11. DISPATCH
+# 11. ACTION: --retarget
+#
+# Switches a *running* session to a different mode without tearing the
+# chroot/X server down -- the "close the window, reopen it on another
+# display" trick the close/reopen bugfix already made safe. Deliberately
+# does not touch the frontend Activity itself: closing Anland's has no
+# shell-reachable path (only the static Kotlin instance can), so that
+# stays the caller's job, done only after this exits 0. See
+# ARCHITECTURE.md.
+#
+# The settings check below is byte-for-byte do_start's: mirror needs
+# different `settings put global` values than extend/local, and those
+# only take effect after a reboot (same rule, same message). Checking
+# first and touching nothing else on failure means a refused retarget
+# never leaves the running session worse off than before it was asked.
+# =====================================================================
+do_retarget() {
+    if ! is_running; then
+        echo "[!] No running session detected."
+        exit 1
+    fi
+
+    CUR_MODE=$(saved_mode)
+    if [ -z "$CUR_MODE" ]; then
+        echo "[!] Could not determine the current mode."
+        exit 1
+    fi
+    if [ "$CUR_MODE" = "$MODE" ]; then
+        echo "[*] Already in $MODE mode."
+        exit 0
+    fi
+    echo "[*] Retargeting: $CUR_MODE -> $MODE"
+
+    if [ "$MODE" != "local" ]; then
+        if [ "$MODE" = "mirror" ]; then
+            WANT_FREEFORM=1; WANT_DESKTOP=0; WANT_NONRESIZE=0; WANT_RESIZE=0
+        else
+            WANT_FREEFORM=1; WANT_DESKTOP=1; WANT_NONRESIZE=1; WANT_RESIZE=1
+        fi
+
+        CUR_FREEFORM=$(settings get global enable_freeform_support 2>/dev/null)
+        CUR_DESKTOP=$(settings get global force_desktop_mode_on_external_displays 2>/dev/null)
+        CUR_NONRESIZE=$(settings get global enable_non_resizable_multi_window 2>/dev/null)
+        CUR_RESIZE=$(settings get global force_resizable_activities 2>/dev/null)
+        [ "$CUR_FREEFORM" = "null" ] && CUR_FREEFORM=0
+        [ "$CUR_DESKTOP"  = "null" ] && CUR_DESKTOP=0
+        [ "$CUR_NONRESIZE" = "null" ] && CUR_NONRESIZE=0
+        [ "$CUR_RESIZE"   = "null" ] && CUR_RESIZE=0
+
+        if [ "$CUR_FREEFORM" != "$WANT_FREEFORM" ] \
+           || [ "$CUR_DESKTOP" != "$WANT_DESKTOP" ] \
+           || [ "$CUR_NONRESIZE" != "$WANT_NONRESIZE" ] \
+           || [ "$CUR_RESIZE" != "$WANT_RESIZE" ]; then
+            echo "[!] ================================================================"
+            echo "[!] $MODE mode needs different global display settings than are"
+            echo "[!] active right now, and those only take effect AFTER A REBOOT."
+            echo "[!] Staying in $CUR_MODE mode."
+            echo "[!]"
+            echo "[!] To switch to $MODE: stop the session, run '$0 -s --$MODE' once"
+            echo "[!] (it applies the settings and asks for a reboot), reboot, then"
+            echo "[!] start normally in $MODE mode."
+            echo "[!] ================================================================"
+            exit 3
+        fi
+    fi
+
+    EXTERNAL_DISPLAY_ID=""
+    if [ "$MODE" = "extend" ]; then
+        EXTERNAL_DISPLAY_ID=$(detect_external_display_id)
+        if [ -z "$EXTERNAL_DISPLAY_ID" ]; then
+            echo "[!] ERROR: extend mode requested, but no external display is connected."
+            exit 1
+        fi
+        echo "[*] External display detected: displayId=$EXTERNAL_DISPLAY_ID"
+    fi
+
+    # wm size/density only ever deviate from the phone's own in mirror mode.
+    [ "$CUR_MODE" = "mirror" ] && restore_internal_size
+    if [ "$MODE" = "mirror" ]; then
+        apply_external_size || exit 1
+    fi
+
+    echo "$MODE" > "$MODE_FILE"
+    if [ -n "$EXTERNAL_DISPLAY_ID" ]; then
+        echo "$EXTERNAL_DISPLAY_ID $(detect_external_res)" > "$DISPLAY_FILE"
+        chmod 0644 "$DISPLAY_FILE"
+    else
+        rm -f "$DISPLAY_FILE"
+    fi
+    chmod 0644 "$MODE_FILE"
+
+    if [ "$MODE" = "extend" ]; then
+        echo "[*] Launching Termux:X11 on external display (displayId=$EXTERNAL_DISPLAY_ID)..."
+        /system/bin/am start -n "$APP_PACKAGE"/com.termux.x11.MainActivity \
+            --display "$EXTERNAL_DISPLAY_ID" --windowingMode 1 -f 0x18000000
+    else
+        echo "[*] Launching Termux:X11 Android frontend application..."
+        /system/bin/am start -n "$APP_PACKAGE"/com.termux.x11.MainActivity
+    fi
+
+    echo "[*] Done. Now in $MODE mode."
+}
+
+# =====================================================================
+# 12. DISPATCH
 # =====================================================================
 [ "$ACTION" != "version" ] && reset_stale_state
 
@@ -1588,5 +1715,6 @@ case "$ACTION" in
     lock)      do_lock ;;
     exsize)    do_exsize ;;
     insize)    do_insize ;;
+    retarget)  do_retarget ;;
     start)     do_start ;;
 esac

@@ -287,42 +287,36 @@ class BootstrapManager(private val context: Context) {
     /**
      * Deletes the tool rootfs, but never through a mount.
      *
-     * The in-app terminal bind-mounts `/dev`, `/dev/pts`, `/proc` and `/sys`
-     * into this tree. Android's toybox `rm` has no `--one-file-system`, so a
-     * plain `rm -rf` here walks straight into the bind mount and deletes the
-     * host's device nodes. Unmount innermost-first, refuse to delete while
-     * anything is still mounted, and only then remove the tree.
-     */
-    /**
-     * Unmounts everything under [prefix] and then deletes it.
-     *
      * Two hazards, both measured on the device:
      *
-     * 1. `rm -rf` over a live `--bind /dev` walks into the bind and deletes the
-     *    host's device nodes -- toybox `rm` has no `--one-file-system`. Hence
-     *    the final check, which refuses to delete while anything is still
-     *    mounted under here.
+     * 1. `rm -rf` over a live `--bind /dev` (or over [SessionScripts.ANDROID_MOUNT],
+     *    a recursive bind of `/`) walks straight into the mount and deletes
+     *    what is behind it -- for `/dev` that is the host's device nodes, for
+     *    `ANDROID_MOUNT` it is the real filesystem, including the user's own
+     *    files. toybox `rm` has no `--one-file-system` to stop it.
      * 2. Unmounting a mount propagates the unmount to the peers of its
-     *    **parent** mount. For the ordinary binds that is harmless: the parent
-     *    is the `/data` mount, and the host's `/dev` is not a child of `/data`.
-     *    It is not harmless for `mnt/android`, which the local session creates
-     *    with `-o rbind /`: there the replica's root *is* a peer of the real
-     *    `/`, so unmounting its children reaches the host's `/system`, `/data`
-     *    and the rest -- the phone loses every binary mid-session and has to be
-     *    rebooted. `SessionScripts` already takes that subtree out of the peer
-     *    group with `rslave` when it creates it; doing it again here, on every
-     *    mount, costs nothing and covers anything an older build left behind.
+     *    **parent** mount, not its own. For the ordinary binds that is
+     *    harmless -- their parent is the `/data` mount, and the host's `/dev`
+     *    is not a child of `/data`. It is not harmless for `ANDROID_MOUNT`,
+     *    whose parent is a replica of `/` itself, a peer of the real `/`:
+     *    unmounting its children there reaches the host's `/system`, `/data`
+     *    and the rest, and the phone loses every binary until it is rebooted.
      *
-     * Order matters too: reverse lexicographic sort puts a child mount path
-     * before its parent, which is the order they have to go in.
+     * [SessionScripts.wipeTree] handles both: it retries the unmount deepest
+     * first with `rslave` ahead of every `umount` (hazard 2), and only runs
+     * `rm -rf` if a check made *immediately before it, in the same shell
+     * invocation* finds nothing still mounted (hazard 1). That last point is
+     * not incidental -- an earlier version of this function ran the "is it
+     * unmounted?" check and the `rm -rf` as two separate root-shell round
+     * trips, so a bug in the check alone (there was one; the app's own data
+     * directory is reached through a bind mount, so `/proc/mounts` disagreed
+     * with `context.filesDir` about its own spelling) was enough to make this
+     * function believe `ANDROID_MOUNT` was already gone and delete straight
+     * through it. Collapsing check-then-delete into one atomic script removes
+     * that class of bug rather than patching this one instance of it.
      */
-    private fun wipeRootfs(prefix: String): Boolean {
-        if (!runSuCommand(com.xiaoian.app.terminal.SessionScripts.unmountTree(prefix))) {
-            Log.e(TAG, "Refusing to delete $prefix: something is still mounted under it")
-            return false
-        }
-        return runSuCommand("rm -rf $prefix", RootShell.NO_TIMEOUT)
-    }
+    private fun wipeRootfs(prefix: String): Boolean =
+        runSuCommand(com.xiaoian.app.terminal.SessionScripts.wipeTree(prefix), RootShell.NO_TIMEOUT)
 
     /**
      * Runs one command in the shared root shell.

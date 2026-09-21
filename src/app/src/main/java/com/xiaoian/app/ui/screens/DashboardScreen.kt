@@ -37,6 +37,8 @@ fun DashboardScreen(
     val storageLoading by viewModel.storageLoading.collectAsState()
     val uninstallState by viewModel.uninstallState.collectAsState()
     val externalDisplays by viewModel.externalDisplays.collectAsState()
+    val retargeting by viewModel.retargeting.collectAsState()
+    val retargetError by viewModel.retargetError.collectAsState()
     
     // Opens on whatever the last started session used, and rememberSaveable so
     // a half-made choice also survives a rotation.
@@ -255,10 +257,14 @@ fun DashboardScreen(
             selectedDE = selectedDE,
             setupProgress = setup,
             uninstallInProgress = uninstallState.inProgress,
+            externalDisplays = externalDisplays,
+            retargeting = retargeting,
+            retargetError = retargetError,
             onUninstall = { showUninstallDialog = "xfce" },
             onOpenDesktop = { openDesktop("xfce") },
             onLockPhone = { viewModel.lockPhone() },
             onStopSession = { viewModel.stopSession() },
+            onRetarget = { mode, display -> viewModel.retarget(mode, display) },
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -273,10 +279,14 @@ fun DashboardScreen(
             selectedDE = selectedDE,
             setupProgress = setup,
             uninstallInProgress = uninstallState.inProgress,
+            externalDisplays = externalDisplays,
+            retargeting = retargeting,
+            retargetError = retargetError,
             onUninstall = { showUninstallDialog = "kde" },
             onOpenDesktop = { openDesktop("kde") },
             onLockPhone = { viewModel.lockPhone() },
             onStopSession = { viewModel.stopSession() },
+            onRetarget = { mode, display -> viewModel.retarget(mode, display) },
         )
     }
 
@@ -321,10 +331,14 @@ fun InstalledEnvironmentCard(
     selectedDE: String,
     setupProgress: SetupProgress,
     uninstallInProgress: Boolean,
+    externalDisplays: List<ExternalDisplay>,
+    retargeting: Boolean,
+    retargetError: String?,
     onUninstall: () -> Unit,
     onOpenDesktop: () -> Unit,
     onLockPhone: () -> Unit,
     onStopSession: () -> Unit,
+    onRetarget: (String, ExternalDisplay?) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -408,7 +422,63 @@ fun InstalledEnvironmentCard(
                         }
                         Text("Display mode: ${sessionState.mode}")
 
-                        
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Lets a running session move between local/extend/mirror
+                        // without a full stop+start. Seeded fresh on every mode
+                        // change so switching DE cards (each recomposes on its
+                        // own sessionState.mode) never carries a stale target.
+                        var retargetMode by remember(sessionState.mode) { mutableStateOf(sessionState.mode) }
+                        var retargetDisplayId by remember(sessionState.mode) {
+                            mutableStateOf(externalDisplays.firstOrNull()?.id)
+                        }
+                        val retargetDisplay = externalDisplays.firstOrNull { it.id == retargetDisplayId }
+                        val hasDisplay = externalDisplays.isNotEmpty()
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ModeOption("Extend", "extend", retargetMode, hasDisplay) { retargetMode = it }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            ModeOption("Mirror", "mirror", retargetMode, hasDisplay) { retargetMode = it }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            ModeOption("Local", "local", retargetMode, true) { retargetMode = it }
+                        }
+                        if (retargetMode != "local" && externalDisplays.size > 1) {
+                            Column {
+                                externalDisplays.forEach { display ->
+                                    Row(
+                                        modifier = Modifier
+                                            .clickable { retargetDisplayId = display.id }
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = retargetDisplayId == display.id,
+                                            onClick = { retargetDisplayId = display.id }
+                                        )
+                                        Text(display.label)
+                                    }
+                                }
+                            }
+                        }
+                        if (retargeting) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Switching...", style = MaterialTheme.typography.bodySmall)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { onRetarget(retargetMode, retargetDisplay) },
+                                enabled = retargetMode != sessionState.mode,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("SWITCH TO ${retargetMode.uppercase()}")
+                            }
+                        }
+                        retargetError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Three equal buttons in one row already did not fit on

@@ -528,6 +528,36 @@ explains nothing.
 Neither script's own detection was removed, so a start with no display passed
 behaves exactly as before.
 
+### Switching a running session's mode
+
+`do_retarget` (`-r`/`--retarget`, same mode flags as `--start`) moves an
+already-running session between local/extend/mirror without a full
+stop/start: the "close the compositor window, reopen it on the target
+display" trick that `LorieApp`'s close/reopen fix (see "Things that are not
+what they look like") already made safe to do quickly.
+
+It is not a free move between any two modes. Extend and local share one set
+of `settings put global` values (`enable_freeform_support` and friends);
+mirror needs a different set, and those only take effect **after a reboot** —
+the same rule `do_start` already enforces. `do_retarget` runs the identical
+check first, before touching anything: if the currently-active settings
+do not match the target mode, it refuses and leaves the session exactly as
+it was, with the same "reboot, then start normally in that mode" message
+`do_start` gives. There is no way around this by going through local as a
+stopover — local does not touch the settings either way, so passing through
+it changes nothing about whether extend and mirror agree.
+
+Ownership is split on purpose: the script owns the settings check, the
+`wm size`/`density` swap (only mirror ever needs it, via the existing
+`apply_external_size`/`restore_internal_size`), the mode file, and the fresh
+`am start` on success. Closing the *previous* frontend instance is the
+caller's job (`XiaoianService.retargetSession`, via the existing
+`closeFrontend()`) — Anland has no shell-reachable close path, only the
+static Kotlin instance can finish it, so that half could never live in the
+script anyway. The service only closes the old frontend and updates its own
+state after the script has already succeeded, so a refused retarget never
+leaves the visible desktop worse off than before it was asked to move.
+
 ### Never ask `/proc/mounts` whether something is mounted
 
 Not for anything under the app's data directory, anyway. `context.filesDir` is
