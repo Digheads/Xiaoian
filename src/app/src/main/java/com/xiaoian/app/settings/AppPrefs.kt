@@ -24,7 +24,7 @@ import android.content.Context
  */
 object AppPrefs {
 
-    /** Our own store. Also used by `service.BootReceiver`. */
+    /** Our own store. */
     private const val XIAOIAN_PREFS = "xiaoian"
 
     /** Owned by `:anland`; see `ExtraKeysBar.PREFS_NAME` / `KEY_EXTRA_KEYS_LAYOUT`. */

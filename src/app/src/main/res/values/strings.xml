@@ -46,10 +46,6 @@
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
-    <string name="settings_default_de">Default desktop</string>
-    <string name="settings_default_mode">Default mode</string>
-    <string name="settings_auto_start">Auto-start on boot</string>
-    <string name="settings_auto_start_desc">Start the desktop automatically when the phone boots</string>
 
     <!-- Log viewer -->
     <string name="logs_title">Session Log</string>

@@ -64,6 +64,7 @@ fun SettingsScreen(innerPadding: PaddingValues = PaddingValues(0.dp)) {
         HorizontalDivider()
         Spacer(Modifier.height(24.dp))
 
+
         Text("Desktop frontends", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
