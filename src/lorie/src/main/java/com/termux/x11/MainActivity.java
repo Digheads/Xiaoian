@@ -684,7 +684,10 @@ public class MainActivity extends AppCompatActivity {
         final ViewPager pager = getTerminalToolbarViewPager();
         ViewGroup parent = (ViewGroup) pager.getParent();
 
-        boolean showNow = !isInPictureInPictureMode && getLorieView().connected() && prefs.showAdditionalKbd.get() && prefs.additionalKbdVisible.get();
+        // Auto-show (Xiaoian): the bar follows the on-screen keyboard, like
+        // Anland's, instead of staying up after the keyboard is gone.
+        boolean wanted = prefs.autoShowAdditionalKbd.get() ? imeHeight > 0 : prefs.additionalKbdVisible.get();
+        boolean showNow = !isInPictureInPictureMode && getLorieView().connected() && prefs.showAdditionalKbd.get() && wanted;
 
         pager.setVisibility(showNow ? View.VISIBLE : View.INVISIBLE);
 
@@ -791,8 +794,12 @@ public class MainActivity extends AppCompatActivity {
         if (imeHeight == height)
             return;
 
+        boolean imeToggled = (imeHeight > 0) != (height > 0);
         imeHeight = height;
-        setTerminalToolbarViewLayout();
+        if (imeToggled && prefs.autoShowAdditionalKbd.get())
+            setTerminalToolbarView();   // lays out the bar as well
+        else
+            setTerminalToolbarViewLayout();
     }
 
     public void toggleExtraKeys(boolean visible, boolean saveState) {
@@ -1071,7 +1078,9 @@ public class MainActivity extends AppCompatActivity {
 
             setTerminalToolbarView();
             findViewById(R.id.mouse_buttons).setVisibility(prefs.showMouseHelper.get() && "1".equals(prefs.touchMode.get()) && connected ? View.VISIBLE : View.GONE);
-            findViewById(R.id.stub).setVisibility(connected?View.INVISIBLE:View.VISIBLE);
+            // Xiaoian: no logo and Preferences/Exit buttons while disconnected,
+            // just black -- the same as Anland shows without a compositor.
+            findViewById(R.id.stub).setVisibility(View.INVISIBLE);
             getLorieView().setVisibility(connected?View.VISIBLE:View.INVISIBLE);
 
             // We should recover connection in the case if file descriptor for some reason was broken...

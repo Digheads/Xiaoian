@@ -559,6 +559,20 @@ fun InstalledEnvironmentCard(
                             Text("OPEN DESKTOP")
                         }
 
+                        // The phone as touchpad and keyboard: only in extend,
+                        // where the desktop is not on the phone's own screen.
+                        if (sessionState.mode == "extend") {
+                            val context = androidx.compose.ui.platform.LocalContext.current
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = { com.xiaoian.app.TouchpadActivity.start(context, deId) },
+                                enabled = !sessionState.isLocked,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("SHOW INPUT")
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

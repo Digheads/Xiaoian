@@ -628,7 +628,7 @@ public class SettingsActivity extends Activity {
         touchpadModeSwitch.setText(R.string.touchpad_mode_switch);
         touchpadModeSwitch.setTextSize(14);
         touchpadModeSwitch.setPadding(0, dp(8), 0, 0);
-        touchpadModeSwitch.setChecked(prefs.getBoolean(KEY_TOUCHPAD_MODE, false));
+        touchpadModeSwitch.setChecked(prefs.getBoolean(KEY_TOUCHPAD_MODE, MainActivity.DEFAULT_TOUCHPAD_MODE));
         touchpadModeSwitch.setOnCheckedChangeListener((v, checked) ->
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                         .putBoolean(KEY_TOUCHPAD_MODE, checked).apply());

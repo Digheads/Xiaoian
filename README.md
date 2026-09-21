@@ -94,6 +94,20 @@ press also lowers the volume by a step. **Power** unlocks too, but the phone
 treats it as a real screen-off: wake it as usual, and touch works again. Lock is hidden in local mode, where the
 phone screen *is* the desktop.
 
+In extend mode the running-session card also has **Show input**, which turns
+the phone into a touchpad and keyboard for the desktop:
+
+- one finger moves the pointer;
+- a tap is a click, and a two-finger tap is a right click;
+- two fingers scroll;
+- a tap followed by a touch-and-drag holds the button down, for dragging.
+
+The button at the bottom right brings up the phone's keyboard with a row of
+special keys: Esc, Tab, Ctrl, Alt, Super, Shift, arrows, Home/End, PgUp/PgDn
+and Del. A modifier applies to the next key; a long press keeps it on. Touching
+the touchpad puts the keyboard away. The touchpad closes by itself when the
+session stops, leaves extend mode or is locked.
+
 **Extend and mirror are greyed out until an external display is connected** —
 both put the desktop on a screen that has to exist, and the scripts refuse the
 start outright without one. Plug a display in and they become selectable; unplug

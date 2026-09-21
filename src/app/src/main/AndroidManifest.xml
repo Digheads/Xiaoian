@@ -61,6 +61,18 @@
             android:name=".DeviceInfoActivity"
             android:exported="false" />
 
+        <!-- The phone as touchpad and keyboard for an extend-mode desktop. Its
+             own task, so opening it does not bring the dashboard along; it
+             handles the keyboard insets itself (adjustResize + edge-to-edge). -->
+        <activity
+            android:name=".TouchpadActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity=".XiaoianTouchpad"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|screenLayout|smallestScreenSize"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+
         <!-- Its own empty affinity: from the notification it must not bring
              the dashboard up behind the dialog. -->
         <activity

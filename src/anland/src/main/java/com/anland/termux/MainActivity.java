@@ -195,6 +195,8 @@ public class MainActivity extends Activity
 
     // ==================== 触摸板相关设置 ====================
     public static final String KEY_TOUCHPAD_MODE = "touchpad_mode";
+    /** Xiaoian: relative (mouse) movement unless the user picked otherwise. */
+    public static final boolean DEFAULT_TOUCHPAD_MODE = true;
     public static final String KEY_MOUSE_ACCEL = "mouse_speed"; // 名称仍为 speed，实际控制加速度强度
 
     // Routing gate: when on, non-mouse touches go to the virtual touchpad.
@@ -428,7 +430,7 @@ public class MainActivity extends Activity
 
         // ===== 加载触摸板设置 =====
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        isTouchpadMode = prefs.getBoolean(KEY_TOUCHPAD_MODE, false);
+        isTouchpadMode = prefs.getBoolean(KEY_TOUCHPAD_MODE, DEFAULT_TOUCHPAD_MODE);
         virtualTouchpad = new VirtualTouchpad(this);
         virtualTouchpad.setAccelStrength(prefs.getFloat(KEY_MOUSE_ACCEL, 1.0f));
         reloadPointerCapturePreferences();
@@ -753,7 +755,7 @@ public class MainActivity extends Activity
 
         // ===== 重新读取触摸板设置 =====
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        isTouchpadMode = prefs.getBoolean(KEY_TOUCHPAD_MODE, false);
+        isTouchpadMode = prefs.getBoolean(KEY_TOUCHPAD_MODE, DEFAULT_TOUCHPAD_MODE);
         virtualTouchpad.setAccelStrength(prefs.getFloat(KEY_MOUSE_ACCEL, 1.0f));
         reloadPointerCapturePreferences();
     }
@@ -1893,6 +1895,30 @@ public class MainActivity extends Activity
         mButtonDragLastX.clear();
         mButtonDragLastY.clear();
         mLastTouchpadButtonPressed = 0;
+    }
+
+    /** Xiaoian: whether the compositor is up and taking input (see XiaoianInput). */
+    public boolean isSurfaceReady() {
+        return surfaceReady;
+    }
+
+    /**
+     * Xiaoian: relative motion from outside the activity (the phone-screen
+     * touchpad), in desktop pixels. Shares the cursor with the captured
+     * pointer, so both keep one position; no speed or rotation transform --
+     * the caller already applied its own.
+     */
+    public void injectRelativeMotion(float dx, float dy) {
+        if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f))
+            return;
+        ensureCapturedPointerPosition();
+        int outputWidth = customScreenWidth > 0
+            ? customScreenWidth : capturedPointerViewWidth();
+        int outputHeight = customScreenHeight > 0
+            ? customScreenHeight : capturedPointerViewHeight();
+        mPointerX = clamp(mPointerX + dx, 0f, Math.max(0, outputWidth));
+        mPointerY = clamp(mPointerY + dy, 0f, Math.max(0, outputHeight));
+        Native.nativeSendMouseMotion(mPointerX, mPointerY, dx, dy);
     }
 
     private int capturedPointerViewWidth() {

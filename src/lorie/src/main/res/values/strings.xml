@@ -76,6 +76,8 @@ E.g. <b>META</b> for <i>META key</i>, \n
 
     <string name="lorie_pref_showAdditionalKbd">Show additional keyboard</string>
     <string name="lorie_pref_showAdditionalKbd_summary">Show keyboard with additional keys.</string>
+    <string name="lorie_pref_autoShowAdditionalKbd">Show additional keys with the keyboard</string>
+    <string name="lorie_pref_autoShowAdditionalKbd_summary">The additional keys appear and disappear together with the on-screen keyboard.</string>
     <string name="lorie_pref_showIMEWhileExternalConnected">Show IME with external keyboard</string>
     <string name="lorie_pref_showIMEWhileExternalConnected_summary">Show software keyboard while hardware keyboard is connected.</string>
     <string name="lorie_pref_preferScancodes">Prefer scancodes when possible</string>

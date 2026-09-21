@@ -19,9 +19,9 @@
         <SwitchPreferenceCompat app:key="displayStretch" app:defaultValue="false" />
         <SwitchPreferenceCompat app:key="Reseed" app:defaultValue="false" />
         <SwitchPreferenceCompat app:key="PIP" app:defaultValue="false" />
-        <SwitchPreferenceCompat app:key="fullscreen" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="fullscreen" app:defaultValue="true" />
         <ListPreference app:key="forceOrientation" app:defaultValue="auto" app:entries="@array/forceOrientationVariants" app:entryValues="@array/forceOrientationVariants" />
-        <SwitchPreferenceCompat app:key="hideCutout" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="hideCutout" app:defaultValue="true" />
         <ListPreference app:key="screenIdleTimeout" app:defaultValue="system" app:entries="@array/screenIdleTimeoutEntries" app:entryValues="@array/screenIdleTimeoutValues" />
     </PreferenceScreen>
     <PreferenceScreen app:key="pointer">
@@ -34,12 +34,13 @@
         <SwitchPreferenceCompat app:key="pointerCapture" app:defaultValue="false" />
         <ListPreference app:key="transformCapturedPointer" app:defaultValue="no" app:entries="@array/transformCapturedPointerEntries" app:entryValues="@array/transformCapturedPointerValues" />
         <SeekBarPreference app:key="capturedPointerSpeedFactor" app:defaultValue="100" app:min="1" android:max="300" app:seekBarIncrement="1" app:showSeekBarValue="true" app:updatesContinuously="true" />
-        <SwitchPreferenceCompat app:key="tapToMove" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="tapToMove" app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="ignoreGamepadEvents" app:defaultValue="false" />
         <SwitchPreferenceCompat app:key="zoomFollowsCursor" app:defaultValue="true" />
     </PreferenceScreen>
     <PreferenceScreen app:key="kbd">
         <SwitchPreferenceCompat app:key="showAdditionalKbd" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="autoShowAdditionalKbd" app:defaultValue="true" />
         <!-- this preference should be a part of `Prefs` but should not appear in PreferenceScreen -->
         <SwitchPreferenceCompat app:key="additionalKbdVisible" app:defaultValue="true" app:isPreferenceVisible="false" />
         <SwitchPreferenceCompat app:key="showIMEWhileExternalConnected" app:defaultValue="true" />
