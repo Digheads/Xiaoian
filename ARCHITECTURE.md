@@ -454,19 +454,87 @@ Two rules make it safe, and both are in
 uses it too. It goes deepest first (reverse lexicographic order gives exactly
 that) and `rslave`s every mount before unmounting it.
 
-`/mnt/android` is deliberately **not** offered in the desktop chroots: it is
-outside the scripts' `CHROOT_MOUNTS`, so `do_uninstall` would not unmount it
-before its `rm -rf`, and that `rm -rf` would walk into the host filesystem.
-toybox `rm` has no `--one-file-system`.
+### Internal storage, and why the desktops get only one branch
+
+A file has one address everywhere: **`/mnt/android/storage/emulated/0`**, in the
+local rootfs and in both desktop chroots. In the local one it is simply part of
+the recursive bind of `/`; the desktops bind that single directory to that same
+path. `/android` in the local rootfs is a symlink to `/mnt/android`, and
+`/root/Storage` in each desktop is a symlink to the storage path, because
+neither is something anyone wants to type.
+
+Two decisions inside that are worth keeping:
+
+**Bound from `/storage/emulated/0`, not `/data/media/0`.** The desktops used to
+bind the raw path — it is faster, being FUSE's backing store rather than FUSE.
+But writes there never reach MediaProvider, so nothing new appears in Gallery or
+Files until a rescan, and files land as `root:root` instead of the
+`<app>:media_rw` ownership Android gives its own. Through the FUSE view a file
+written from inside the chroot comes out indistinguishable from one an Android
+app wrote (verified on the device, including from inside the app's own mount
+namespace, which is where these scripts run).
+
+**The desktops do not get the whole `-o rbind /`.** Only the storage branch.
+A full replica would mean porting the propagation-safe dance — self-bind,
+`rprivate`, `rbind`, `rslave`, then `rslave` again before each `umount`,
+deepest first — into both desktop scripts, whose `unmount_all` does none of
+that; it walks `CHROOT_MOUNTS` and plainly unmounts each one, which for a
+replica of `/` is precisely the move that once left the phone without a single
+binary. It would also add ~190 mount entries per desktop session. A KDE file
+manager does not need the host's `/proc`. The single non-recursive bind used
+instead is exactly as safe as the `/home` bind it replaced: its parent is the
+`/data` mount, so nothing propagates anywhere interesting.
+
+It is in `CHROOT_MOUNTS`, which is what matters for the other hazard:
+`do_uninstall` ends in `rm -rf`, toybox `rm` has no `--one-file-system`, and an
+unmounted-but-still-present storage bind would take the walk into the phone's
+own files.
+
+**`/home` is left empty**, the way Debian has it. It used to hold the phone's
+storage, which put DCIM and Download in the directory Linux reserves for user
+home directories while the actual home was `/root` — two parallel sets of
+`Downloads`, and a `/home/alice` would have been created inside the phone's
+storage the day anyone added a user. It also leaked: `.config/Thunar` and
+`.dbus/session-bus`, root-owned, were found at the top of the device's internal
+storage, put there by a desktop session that resolved `~` to `/home`.
+
+### Never ask `/proc/mounts` whether something is mounted
+
+Not for anything under the app's data directory, anyway. `context.filesDir` is
+`/data/user/0/<pkg>/files`, but inside an app's mount namespace `/data/user/0`
+is reached through a bind mount, so the kernel records mount points under its
+own spelling — `/data/data/<pkg>/files/rootfs/proc`. Both paths exist, both are
+real directories (neither is a symlink, so `getCanonicalPath()` and
+`readlink -f` are no help), and `mount`/`umount` accept either. Only
+`/proc/mounts` insists on one.
+
+`grep " $target " /proc/mounts` therefore never matched, and it was doing three
+jobs:
+
+| | Consequence |
+|---|---|
+| `ensure_mount`'s "already there?" check | Four `could not mount` lines on every local terminal, after everything had mounted fine |
+| the `/mnt/android` guard | Every session re-bound the whole Android tree — two full copies measured on the device |
+| `unmountTree` | Found nothing, so `releaseAndroidBind` silently never released anything |
+
+The first two now use `is_mountpoint`, which compares a directory's device
+number against its parent's (`stat -c %d`) and so asks the kernel rather than
+the path. It cannot see a bind of a directory onto another directory of the
+same filesystem, which is fine here: every mount involved brings its own
+filesystem.
+
+`unmountTree` still has to work by path — it enumerates submounts whose names
+it cannot know — so it matches **both** spellings, translating `/data/user/0/…`
+to `/data/data/…` and back.
 
 ### A chroot terminal without its desktop
 
-If the desktop is not running, the session mounts the same four as the local one
-(`proc`, `sys`, `dev`, `dev/pts`) — all of them in `CHROOT_MOUNTS`, so a desktop
-started later finds them (`is_mounted || mount`) and its stop still tears them
-down. `run`, `tmp`, `home` and `dev/shm` are left alone on purpose: the script
-mounts `run` as a *fresh* tmpfs per session and only clears the stale one while
-it is unmounted.
+If the desktop is not running, the session mounts the same set as the local one
+(`proc`, `sys`, `dev`, `dev/pts` and internal storage) — all of them in
+`CHROOT_MOUNTS`, so a desktop started later finds them (`is_mounted || mount`)
+and its stop still tears them down. `run`, `tmp` and `dev/shm` are left alone on
+purpose: the script mounts `run` as a *fresh* tmpfs per session and only clears
+the stale one while it is unmounted.
 
 Starting the desktop afterwards must not kill that shell. `do_start` begins by
 clearing whatever it finds in the chroot (`unmount_all`, which calls

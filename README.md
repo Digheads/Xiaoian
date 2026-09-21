@@ -84,7 +84,7 @@ It can open three kinds of session:
 
 | | |
 |---|---|
-| **Local** | A small Debian tool environment that belongs to the app. It needs no desktop at all, and the app installs it the first time you ask for it. |
+| **Local** | A small Debian bootstrap environment that belongs to the app. It needs no desktop at all, and the app installs it the first time you ask for it. |
 | **XFCE** | A shell inside the XFCE desktop's Debian tree. |
 | **KDE** | A shell inside the KDE desktop's Debian tree. |
 
@@ -115,19 +115,36 @@ bar-`CTRL` plus `c` sends `^C`.
 
 The **gear key** on the bar opens the app's settings, where the layout lives.
 
-### `/mnt/android` — your phone's filesystem
+### Reaching your phone's files
 
-In a **local** session the whole Android filesystem is mounted at
-`/mnt/android`, so `/mnt/android/system`, `/mnt/android/data` and the rest are
-all there. Your internal storage is at `/mnt/android/storage/emulated/0`.
+Your internal storage is at the **same path everywhere** — in a local terminal,
+in a chroot terminal, and on either desktop:
+
+```
+/mnt/android/storage/emulated/0
+```
+
+So `/mnt/android/storage/emulated/0/DCIM` is your camera roll, from anywhere.
+Two shortcuts exist so you never have to type that:
+
+| | |
+|---|---|
+| `/android` | In a **local** terminal, a symlink to `/mnt/android` |
+| `~/Storage` | On a **desktop**, a symlink to your internal storage — it shows up in the file manager's Home |
+
+A **local** terminal gets more than storage: the whole Android filesystem is
+there, so `/android/system`, `/android/data` and the rest are all browsable. The
+desktops get only the storage branch of that tree, which is the part worth
+having and the part that is safe to unmount afterwards.
 
 > `/mnt/android/sdcard` is a symlink that points outside the chroot, so it does
 > not resolve. Use the `storage/emulated/0` path above.
 
-It is unmounted again once the last live local session is gone. The desktop
-chroots deliberately do **not** get this mount — see
-[ARCHITECTURE.md](ARCHITECTURE.md#mounts-and-mount-propagation) for
-why.
+Files you save from the desktop land in your phone's storage exactly as if an
+Android app had written them, so they show up in Gallery and Files normally.
+
+The local terminal's mount is released once the last live local session is gone;
+the desktops' is released when the session stops.
 
 ---
 
@@ -179,7 +196,7 @@ resets a `shell` grant.
 
 **The terminal says the environment is not installed.** For a desktop chroot,
 install that desktop from the dashboard first. For a local session the app
-installs the tool environment itself, so this only means the install failed —
+installs the bootstrap environment itself, so this only means the install failed —
 check your connection and free space.
 
 **A session was left behind after the app was killed.** The app notices on its

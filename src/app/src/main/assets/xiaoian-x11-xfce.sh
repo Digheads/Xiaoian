@@ -169,7 +169,9 @@ WATCHER_PID_FILE="$INFRA_ROOT/watcher.pid"
 SESSION_WRAPPER="$INFRA_ROOT/session.sh"
 
 # Unmount order matters: nested mounts first.
-CHROOT_MOUNTS="home dev/shm tmp dev/pts dev run sys proc"
+# The storage bind sits first so it comes off before the rest; it is a
+# plain, non-recursive bind, so one umount clears it.
+CHROOT_MOUNTS="mnt/android/storage/emulated/0 dev/shm tmp dev/pts dev run sys proc"
 
 # ---- session state --------------------------------------------------
 # The state file holds "<wrapper pid> <boot id>". The boot id makes a
@@ -335,7 +337,7 @@ is_mounted() { grep -q " $DEBIAN_ROOTFS/$1 " /proc/mounts 2>/dev/null; }
 
 mount_all() {
     local m
-    for m in proc sys run dev tmp home; do
+    for m in proc sys run dev tmp mnt/android/storage/emulated/0; do
         mkdir -p "$DEBIAN_ROOTFS/$m"
     done
     # /run is a fresh tmpfs per session: no stale sockets, locks or
@@ -349,7 +351,24 @@ mount_all() {
     is_mounted dev/pts || mount --bind /dev/pts "$DEBIAN_ROOTFS/dev/pts"
     is_mounted dev/shm || mount -t tmpfs -o mode=1777 tmpfs "$DEBIAN_ROOTFS/dev/shm"
     is_mounted tmp     || mount --bind "$TMPDIR" "$DEBIAN_ROOTFS/tmp"
-    is_mounted home    || mount --bind /data/media/0 "$DEBIAN_ROOTFS/home"
+    # Internal storage, at the same path the in-app local terminal uses, so
+    # a file has one address across all three environments.
+    #
+    # Bound from the FUSE view, not from /data/media/0 underneath it. The raw
+    # path is faster but it is MediaProvider's backing store: writes there are
+    # invisible to the MediaStore index (nothing new shows up in Gallery or
+    # Files until a rescan) and land as root:root instead of the app/media_rw
+    # ownership Android gives its own files. Through FUSE a file written from
+    # the chroot comes out exactly like one written by an Android app.
+    if ! is_mounted mnt/android/storage/emulated/0; then
+        mount --bind /storage/emulated/0 "$DEBIAN_ROOTFS/mnt/android/storage/emulated/0"
+    fi
+
+    # Where the desktop's file manager will actually look. /mnt/... is the
+    # honest location; nobody wants to type it.
+    if [ ! -e "$DEBIAN_ROOTFS/root/Storage" ] && [ ! -L "$DEBIAN_ROOTFS/root/Storage" ]; then
+        ln -s /mnt/android/storage/emulated/0 "$DEBIAN_ROOTFS/root/Storage"
+    fi
 
     mkdir -p "$DEBIAN_ROOTFS/run/dbus" "$DEBIAN_ROOTFS/run/lock" "$DEBIAN_ROOTFS/run/user/0"
     chmod 1777 "$DEBIAN_ROOTFS/run/lock"

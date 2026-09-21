@@ -312,7 +312,7 @@ class TerminalActivity : ComponentActivity() {
             addView(bar)
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Setting up the Debian tool environment")
+            .setTitle("Setting up the Debian bootstrap environment")
             .setView(box)
             // No cancel button: the work happens inside a blocking root shell
             // command, so a cancel could not actually stop it and would only
@@ -344,7 +344,7 @@ class TerminalActivity : ComponentActivity() {
         }
 
         if (!ok) {
-            Toast.makeText(this, "Could not install the tool environment", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Could not install the bootstrap environment", Toast.LENGTH_LONG).show()
             if (TerminalSessions.sessions.value.isEmpty()) finish()
         }
         return ok

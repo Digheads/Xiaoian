@@ -21,6 +21,45 @@ object SessionScripts {
     const val ANDROID_MOUNT = "mnt/android"
 
     /**
+     * Internal storage inside a *desktop* chroot.
+     *
+     * Deliberately the same path the local rootfs reaches it by, under its
+     * `/mnt/android` tree, so a file has one address in all three
+     * environments. The desktop only gets this one branch of that tree, not
+     * the whole recursive bind of `/`: see ARCHITECTURE.md.
+     *
+     * Mirrored in `xiaoian-*.sh`, whose `CHROOT_MOUNTS` is what tears it down.
+     */
+    const val DESKTOP_STORAGE = "mnt/android/storage/emulated/0"
+
+    /**
+     * `is_mountpoint DIR`: true when something is mounted on [DIR].
+     *
+     * Deliberately not `grep " $dir " /proc/mounts`, which is what this used to
+     * be and what made every local terminal print four "could not mount" lines
+     * after everything had in fact mounted. The app's rootfs is under
+     * `context.filesDir`, which is `/data/user/0/<pkg>/files`, but inside an
+     * app's mount namespace `/data/user/0` is reached through a bind mount, so
+     * the kernel records the mount points under its own spelling of the path --
+     * `/data/data/<pkg>/files/rootfs/proc`. The grep could never match, so the
+     * "already mounted?" check always said no: the mounts were reported as
+     * failures, and the next session stacked a second copy of all of them,
+     * `/mnt/android`'s ~190 entries included (measured on the device: two full
+     * copies of the Android tree).
+     *
+     * Comparing the device number against the parent's asks the kernel instead
+     * of the path, so it works under either spelling. It cannot see a bind of a
+     * directory onto another directory of the same filesystem; every mount here
+     * brings its own filesystem, so that does not arise.
+     */
+    private val IS_MOUNTPOINT = """
+        is_mountpoint() {
+            [ -d "${'$'}1" ] || return 1
+            [ "${'$'}(stat -c %d "${'$'}1" 2>/dev/null)" != "${'$'}(stat -c %d "${'$'}1/.." 2>/dev/null)" ]
+        }
+    """.trimIndent()
+
+    /**
      * `ensure_mount LABEL TARGET <mount args...>`: mount unless it is already
      * there, and say so once, in our own words, if it did not work.
      *
@@ -30,17 +69,22 @@ object SessionScripts {
      * rootfs that was just replaced, and a moment later it succeeds. So:
      * swallow the first attempt's noise, try once more, and only complain if
      * the mount really is not there afterwards.
+     *
+     * Needs [IS_MOUNTPOINT] in scope.
      */
     private val ENSURE_MOUNT = """
         ensure_mount() {
             _label="${'$'}1"; _target="${'$'}2"; shift 2
-            grep -q " ${'$'}_target " /proc/mounts && return 0
+            is_mountpoint "${'$'}_target" && return 0
             mount "${'$'}@" 2>/dev/null || { sleep 0.3; mount "${'$'}@" 2>/dev/null; }
-            grep -q " ${'$'}_target " /proc/mounts && return 0
+            is_mountpoint "${'$'}_target" && return 0
             echo "[!] could not mount ${'$'}_label at ${'$'}_target"
             return 1
         }
     """.trimIndent()
+
+    /** Both helpers, for the one place a script needs either of them. */
+    private val MOUNT_HELPERS = "$IS_MOUNTPOINT\n\n$ENSURE_MOUNT"
 
     /**
      * Unmounts everything at or under [target], deepest first, and succeeds
@@ -59,22 +103,38 @@ object SessionScripts {
      *   and the phone loses every binary until it is rebooted. Taking each
      *   mount out of its peer group first is what makes this safe.
      *
+     * Unlike the checks above this one *has* to work by path, because it has to
+     * enumerate submounts it does not know the names of. So it matches both
+     * spellings of the app's data directory: `umount` resolves either, but
+     * `/proc/mounts` only ever lists the kernel's own, which inside the app's
+     * mount namespace is `/data/data/<pkg>` even though the app hands us
+     * `/data/user/0/<pkg>`. See [IS_MOUNTPOINT]. Matching only the app's
+     * spelling meant this found nothing and quietly left the whole
+     * `/mnt/android` tree behind on every run.
+     *
      * Wrapped in a subshell because callers run it inside the long-lived root
      * shell, where a bare `exit` would take that shell down.
      */
     fun unmountTree(target: String): String = """
         (
         t='$target'
+        case "${'$'}t" in
+            /data/user/0/*) a="/data/data/${'$'}{t#/data/user/0/}" ;;
+            /data/data/*)   a="/data/user/0/${'$'}{t#/data/data/}" ;;
+            *)              a="${'$'}t" ;;
+        esac
+        mounted() { grep -q -e " ${'$'}t " -e " ${'$'}t/" -e " ${'$'}a " -e " ${'$'}a/" /proc/mounts; }
         i=0
-        while [ ${'$'}i -lt 8 ] && grep -q -e " ${'$'}t " -e " ${'$'}t/" /proc/mounts; do
-            grep -e " ${'$'}t " -e " ${'$'}t/" /proc/mounts | cut -d' ' -f2 | sort -r |
+        while [ ${'$'}i -lt 8 ] && mounted; do
+            grep -e " ${'$'}t " -e " ${'$'}t/" -e " ${'$'}a " -e " ${'$'}a/" /proc/mounts |
+            cut -d' ' -f2 | sort -r |
             while read -r m; do
                 mount -o rslave none "${'$'}m" 2>/dev/null
                 umount "${'$'}m" 2>/dev/null || umount -l "${'$'}m" 2>/dev/null
             done
             i=${'$'}((i + 1))
         done
-        ! grep -q -e " ${'$'}t " -e " ${'$'}t/" /proc/mounts
+        ! mounted
         )
     """.trimIndent()
 
@@ -99,13 +159,20 @@ object SessionScripts {
     private fun local(rootfs: String): String = """
         R='$rootfs'
         if [ ! -x "${'$'}R/bin/bash" ]; then
-            echo 'The Debian tool environment is not installed yet.'
+            echo 'The Debian bootstrap environment is not installed yet.'
             echo 'Start a desktop session once -- the app installs it on the way.'
             exit 1
         fi
         for m in proc sys dev dev/pts $ANDROID_MOUNT; do mkdir -p "${'$'}R/${'$'}m"; done
 
-        $ENSURE_MOUNT
+        # /android -> /mnt/android. Same place, one word to type. Guarded on
+        # both -e and -L because a dangling symlink is invisible to -e, and
+        # `ln -s` into an existing directory would nest rather than replace.
+        if [ ! -e "${'$'}R/android" ] && [ ! -L "${'$'}R/android" ]; then
+            ln -s "/$ANDROID_MOUNT" "${'$'}R/android"
+        fi
+
+        $MOUNT_HELPERS
 
         ensure_mount proc "${'$'}R/proc" -t proc proc "${'$'}R/proc"
         ensure_mount sysfs "${'$'}R/sys" -t sysfs sys "${'$'}R/sys"
@@ -152,7 +219,7 @@ object SessionScripts {
      * different: by then the mount point is private, so backing out is safe.
      */
     private val ANDROID_BIND = """
-        if ! grep -q " ${'$'}R/$ANDROID_MOUNT " /proc/mounts; then
+        if ! is_mountpoint "${'$'}R/$ANDROID_MOUNT"; then
             if mount --bind "${'$'}R/$ANDROID_MOUNT" "${'$'}R/$ANDROID_MOUNT" 2>/dev/null; then
                 mount -o rprivate none "${'$'}R/$ANDROID_MOUNT" 2>/dev/null
                 if mount -o rbind / "${'$'}R/$ANDROID_MOUNT" 2>/dev/null; then
@@ -236,14 +303,19 @@ object SessionScripts {
                 fi
                 $liveEnv
             else
-                # Same four as the local session, all of them in the desktop
-                # script's CHROOT_MOUNTS, so its stop still cleans them up.
-                for m in proc sys dev dev/pts; do mkdir -p "${'$'}R/${'$'}m"; done
-                $ENSURE_MOUNT
+                # Same as the local session, and every one of them is in the
+                # desktop script's CHROOT_MOUNTS, so its stop still cleans
+                # them up. Storage comes from the FUSE view for the reason
+                # spelled out in xiaoian-*.sh: the raw /data/media/0 is
+                # MediaProvider's backing store and writing there is invisible
+                # to the media index.
+                for m in proc sys dev dev/pts $DESKTOP_STORAGE; do mkdir -p "${'$'}R/${'$'}m"; done
+                $MOUNT_HELPERS
                 ensure_mount proc "${'$'}R/proc" -t proc proc "${'$'}R/proc"
                 ensure_mount sysfs "${'$'}R/sys" -t sysfs sys "${'$'}R/sys"
                 ensure_mount /dev "${'$'}R/dev" --bind /dev "${'$'}R/dev"
                 ensure_mount /dev/pts "${'$'}R/dev/pts" --bind /dev/pts "${'$'}R/dev/pts"
+                ensure_mount storage "${'$'}R/$DESKTOP_STORAGE" --bind /storage/emulated/0 "${'$'}R/$DESKTOP_STORAGE"
                 echo '[*] $name is not running: this is a plain chroot shell.'
                 echo '[*] No display, no session bus. Starting the desktop later'
                 echo '[*] adds its own mounts on top of these.'

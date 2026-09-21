@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -34,8 +35,10 @@ fun DashboardScreen(
     val storageLoading by viewModel.storageLoading.collectAsState()
     val uninstallState by viewModel.uninstallState.collectAsState()
     
-    var selectedDE by remember { mutableStateOf("kde") }
-    var selectedMode by remember { mutableStateOf("extend") }
+    // Opens on whatever the last started session used, and rememberSaveable so
+    // a half-made choice also survives a rotation.
+    var selectedDE by rememberSaveable { mutableStateOf(viewModel.lastDe) }
+    var selectedMode by rememberSaveable { mutableStateOf(viewModel.lastMode) }
     var showUninstallDialog by remember { mutableStateOf<String?>(null) }
     
     val scrollState = rememberScrollState()

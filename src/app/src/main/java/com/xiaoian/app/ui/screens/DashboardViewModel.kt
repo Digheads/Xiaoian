@@ -9,6 +9,7 @@ import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
 import com.xiaoian.app.service.XiaoianService
+import com.xiaoian.app.settings.AppPrefs
 import com.xiaoian.app.shell.RootShell
 import com.xiaoian.app.shell.ShellExecutor
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uninstallState = MutableStateFlow(UninstallState())
     val uninstallState: StateFlow<UninstallState> = _uninstallState.asStateFlow()
 
+    /**
+     * What the last started session used, for the dashboard's radio buttons to
+     * open on. See [AppPrefs.lastDe].
+     */
+    val lastDe: String = AppPrefs.lastDe(application)
+    val lastMode: String = AppPrefs.lastMode(application)
+
     companion object {
         private const val TAG = "DashboardViewModel"
         private const val XFCE_INFRA = "/data/local/xiaoian-x11-xfce"
@@ -52,6 +60,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startSession(mode: String, de: String) {
+        // The only place a desktop starts from the dashboard, so the only place
+        // that has to remember what it was started with.
+        AppPrefs.setLastSelection(getApplication(), de, mode)
         val intent = Intent(getApplication(), XiaoianService::class.java).apply {
             action = XiaoianService.ACTION_START
             putExtra("mode", mode)

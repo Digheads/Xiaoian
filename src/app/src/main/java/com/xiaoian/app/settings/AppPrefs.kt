@@ -3,12 +3,14 @@ package com.xiaoian.app.settings
 import android.content.Context
 
 /**
- * The preferences the app itself owns, plus the one it shares with the KDE
+ * The preferences the app itself owns -- the terminal's settings and what the
+ * dashboard remembers between runs -- plus the one it shares with the KDE
  * frontend.
  *
  * Three stores exist in this APK and they belong to different owners:
  *
- *  - `xiaoian` -- ours. The terminal's own settings live here.
+ *  - `xiaoian` -- ours. The terminal's settings and the dashboard's last
+ *    desktop/display-mode choice live here.
  *  - `anland_settings` -- the `:anland` module's. We touch exactly one key in
  *    it, [extraKeysLayout], because the terminal and the KDE desktop draw the
  *    same [com.anland.termux.ExtraKeysBar] from it.
@@ -32,9 +34,18 @@ object AppPrefs {
     private const val KEY_TERMINAL_TEXT_SIZE = "terminal_text_size"
     private const val KEY_TERMINAL_EXTRA_KEYS = "terminal_extra_keys"
 
+    private const val KEY_LAST_DE = "last_de"
+    private const val KEY_LAST_MODE = "last_mode"
+
     const val TEXT_SIZE_MIN = 8
     const val TEXT_SIZE_MAX = 36
     const val TEXT_SIZE_DEFAULT = 14
+
+    const val DEFAULT_DE = "kde"
+    const val DEFAULT_MODE = "extend"
+
+    private val DESKTOPS = setOf("kde", "xfce")
+    private val DISPLAY_MODES = setOf("extend", "mirror", "local")
 
     private fun ours(context: Context) =
         context.getSharedPreferences(XIAOIAN_PREFS, Context.MODE_PRIVATE)
@@ -76,5 +87,31 @@ object AppPrefs {
 
     fun setTerminalExtraKeysVisible(context: Context, visible: Boolean) {
         ours(context).edit().putBoolean(KEY_TERMINAL_EXTRA_KEYS, visible).apply()
+    }
+
+    /**
+     * The desktop and display mode the last **started** session used, so the
+     * dashboard opens on them instead of on KDE/extend every time.
+     *
+     * Recorded on start rather than on every tap of a radio button: a selection
+     * the user never went through with says nothing about what they want next.
+     *
+     * Both reads fall back to the default when the stored value is not one this
+     * version knows. An unrecognised string would otherwise leave the radio
+     * group with nothing selected at all.
+     */
+    fun lastDe(context: Context): String =
+        ours(context).getString(KEY_LAST_DE, DEFAULT_DE)
+            ?.takeIf { it in DESKTOPS } ?: DEFAULT_DE
+
+    fun lastMode(context: Context): String =
+        ours(context).getString(KEY_LAST_MODE, DEFAULT_MODE)
+            ?.takeIf { it in DISPLAY_MODES } ?: DEFAULT_MODE
+
+    fun setLastSelection(context: Context, de: String, mode: String) {
+        ours(context).edit()
+            .putString(KEY_LAST_DE, de)
+            .putString(KEY_LAST_MODE, mode)
+            .apply()
     }
 }
