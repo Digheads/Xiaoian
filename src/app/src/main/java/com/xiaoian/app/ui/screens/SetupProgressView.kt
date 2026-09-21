@@ -36,9 +36,12 @@ fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
         // only moving text -- what apt is actually doing -- at the very bottom
         // of the card.
         Text(
-            progress.detail.ifBlank { progress.current?.title ?: "Starting session..." },
+            progress.detail.trim().replace(Regex("\\s+"), " ")
+                .ifBlank { progress.current?.title ?: "Starting session..." },
             style = MaterialTheme.typography.bodyMedium,
-            maxLines = 2,
+            // One line, cut with an ellipsis: a package name long enough to
+            // wrap used to push everything below down and back up.
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Spacer(modifier = Modifier.height(12.dp))
@@ -50,9 +53,14 @@ fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
         Spacer(modifier = Modifier.height(4.dp))
-        progressLabel(progress)?.let {
-            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        // Kept even when empty, for the same reason.
+        Text(
+            progressLabel(progress) ?: "",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
 
         Spacer(modifier = Modifier.height(20.dp))
         progress.steps.forEach { StepRow(it) }

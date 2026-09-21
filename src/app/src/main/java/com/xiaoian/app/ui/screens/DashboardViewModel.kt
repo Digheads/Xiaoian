@@ -83,10 +83,47 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         private const val TAG = "DashboardViewModel"
         private const val XFCE_INFRA = "/data/local/xiaoian-x11-xfce"
         private const val KDE_INFRA = "/data/local/xiaoian-wayland-kde"
+        /** The script pads names into columns ("etc             ... done"). */
+        private val WHITESPACE = Regex("\\s+")
+    }
+
+    /**
+     * A desktop left running by an earlier run of the app, as (de, mode,
+     * locked) -- the same test as the scripts' state_pid: the state file's
+     * pid is still the session wrapper, and from this boot.
+     */
+    private suspend fun findLiveSession(): Triple<String, String, Boolean>? {
+        for ((de, infra) in listOf("xfce" to XFCE_INFRA, "kde" to KDE_INFRA)) {
+            val lines = mutableListOf<String>()
+            val cmd = "(read -r p b < $infra/state 2>/dev/null || exit 1; " +
+                "[ -z \"\$b\" ] || [ \"\$b\" = \"\$(cat /proc/sys/kernel/random/boot_id)\" ] || exit 1; " +
+                "grep -qF $infra/session.sh /proc/\$p/cmdline 2>/dev/null || exit 1; " +
+                "cat $infra/mode 2>/dev/null; echo; [ -f $infra/locked ] && echo locked; exit 0)"
+            if (!shellExecutor.run(cmd) { lines += it.trim() }.success) continue
+            val mode = lines.firstOrNull { it in listOf("extend", "mirror", "local") } ?: "local"
+            return Triple(de, mode, "locked" in lines)
+        }
+        return null
     }
 
     init {
-        refreshStorage()
+        viewModelScope.launch {
+            val live = if (sessionState.value is SessionState.Idle) findLiveSession() else null
+            if (live == null) {
+                refreshStorage()
+            } else {
+                val (de, mode, locked) = live
+                // Running from here on; the collector below marks it installed.
+                getApplication<Application>().startForegroundService(
+                    Intent(getApplication(), XiaoianService::class.java).apply {
+                        action = XiaoianService.ACTION_ADOPT
+                        putExtra("de", de)
+                        putExtra("mode", mode)
+                        putExtra("locked", locked)
+                    }
+                )
+            }
+        }
         // A desktop is installed as part of its first start, and removed files
         // can change size while it runs, so re-read after every transition
         // into a settled state -- not on each progress tick.
@@ -110,7 +147,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * @param display which external display to use, or null to let the script
      *   pick the first one it finds. Ignored in local mode.
      */
-    fun startSession(mode: String, de: String, display: ExternalDisplay? = null) {
+    /** [password]: the first-start root password for the new chroot, or null. */
+    fun startSession(mode: String, de: String, display: ExternalDisplay? = null, password: String? = null) {
         // The only place a desktop starts from the dashboard, so the only place
         // that has to remember what it was started with.
         AppPrefs.setLastSelection(getApplication(), de, mode)
@@ -118,6 +156,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             action = XiaoianService.ACTION_START
             putExtra("mode", mode)
             putExtra("de", de)
+            if (password != null) putExtra("password", password)
             if (mode != "local" && display != null) {
                 putExtra("displayId", display.id)
                 putExtra("displaySize", display.size)
@@ -214,7 +253,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     // The script pads these for a terminal table ("      etc
                     // ... done"); trim so the card shows a clean line instead
                     // of leading/trailing whitespace around the path.
-                    _uninstallState.value = _uninstallState.value.copy(output = line.trim())
+                    Log.i(TAG, "uninstall-$de: $line")
+                    _uninstallState.value = _uninstallState.value.copy(output = line.trim().replace(WHITESPACE, " "))
                 }
             } finally {
                 uninstallShell.close()
@@ -223,7 +263,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             if (result.success) {
                 _uninstallState.value = UninstallState(inProgress = false, de = de, output = "Successfully removed!")
             } else {
-                _uninstallState.value = UninstallState(inProgress = false, de = de, output = "Error: ${result.error}")
+                _uninstallState.value = UninstallState(inProgress = false, de = de, output = "Error: " +
+                    result.error.lines().map { it.trim().removePrefix("[!]").trim() }.filter { it.isNotEmpty() }.joinToString(" "))
             }
 
             refreshStorage()

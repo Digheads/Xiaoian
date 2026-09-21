@@ -67,6 +67,7 @@ object ScriptEnv {
         context: Context,
         displayId: Int? = null,
         displaySize: String? = null,
+        passwordFile: File? = null,
     ): String = buildString {
         append("ANLAND_BIN=${anlandBin(context)} ")
         append("XIAOIAN_LIB_DIR=${libDir(context)} ")
@@ -74,6 +75,8 @@ object ScriptEnv {
         append("XIAOIAN_OPEN_SESSIONS=${openSessionsFile(context)}")
         if (displayId != null) append(" XIAOIAN_DISPLAY_ID=$displayId")
         if (!displaySize.isNullOrBlank()) append(" XIAOIAN_DISPLAY_SIZE=$displaySize")
+        // The path, never the password: see the scripts' chpasswd step.
+        if (passwordFile != null) append(" XIAOIAN_PASSWORD_FILE=${passwordFile.absolutePath}")
     }
 
     /**

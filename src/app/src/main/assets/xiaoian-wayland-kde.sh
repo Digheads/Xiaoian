@@ -1473,6 +1473,18 @@ ASOUND
     echo "[*] Verifying and mounting necessary file systems..."
     mount_all
 
+    # First start only: the app asks for a root password for this chroot and
+    # hands it over in a file (owner-only, in the app's files dir) rather than
+    # on a command line, where `ps` would show it. Consumed here and deleted.
+    if [ -n "$XIAOIAN_PASSWORD_FILE" ] && [ -f "$XIAOIAN_PASSWORD_FILE" ]; then
+        if chroot "$DEBIAN_ROOTFS" /usr/sbin/chpasswd < "$XIAOIAN_PASSWORD_FILE"; then
+            echo "[*] Root password set."
+        else
+            echo "[!] Could not set the root password; set it later with passwd."
+        fi
+        rm -f "$XIAOIAN_PASSWORD_FILE"
+    fi
+
     rm -f $DEBIAN_ROOTFS/tmp/.X0-lock 2>/dev/null
 
     # -----------------------------------------------------------------
@@ -1513,6 +1525,21 @@ KCONNECT
 Autolock=false
 LockOnResume=false
 KSCREENLOCK
+
+    # No manual lock either (Ctrl+Alt+L, the menu entry). The phone's own
+    # lock and the app's virtual lock cover the phone, and a desktop locked
+    # by accident -- root may well have no password -- could not be unlocked.
+    # Kiosk restriction, system-wide and immutable ([$i]), so the user's own
+    # kdeglobals -- theme, fonts -- is left alone.
+    KIOSK="$DEBIAN_ROOTFS/etc/xdg/kdeglobals"
+    mkdir -p "$DEBIAN_ROOTFS/etc/xdg"
+    if ! grep -q '^action/lock_screen=false' "$KIOSK" 2>/dev/null; then
+        cat << 'KIOSK_EOF' >> "$KIOSK"
+
+[KDE Action Restrictions][$i]
+action/lock_screen=false
+KIOSK_EOF
+    fi
 
     cat << 'POWERDEVIL' > "$KDE_CFG_DIR/powermanagementprofilesrc"
 [AC][DimDisplay]

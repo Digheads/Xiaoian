@@ -18,8 +18,18 @@ sealed interface SessionSpec {
      * running.
      */
     data object Local : SessionSpec {
-        override val label = "LOCAL"
+        override val label = "XIAOIAN"
         override val group = "local"
+    }
+
+    /**
+     * A root shell on Android itself, outside every chroot -- what `adb shell`
+     * plus `su` would give, for `dumpsys`, `am`, `pm`, `settings` and the rest.
+     * Needs nothing installed and mounts nothing, so nothing tears it down.
+     */
+    data object AndroidShell : SessionSpec {
+        override val label = "ANDROID"
+        override val group = "android"
     }
 
     /**

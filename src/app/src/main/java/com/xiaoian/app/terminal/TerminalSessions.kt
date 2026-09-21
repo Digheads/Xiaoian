@@ -125,7 +125,7 @@ object TerminalSessions {
     }
 
     /**
-     * "LOCAL", then "LOCAL 2" and so on. Two tabs reading the same word with no
+     * "XIAOIAN", then "XIAOIAN 2" and so on. Two tabs reading the same word with no
      * way to tell them apart is worse than a number nobody asked for.
      */
     private fun defaultName(spec: SessionSpec): String {

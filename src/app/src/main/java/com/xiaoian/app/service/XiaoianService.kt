@@ -39,6 +39,7 @@ class XiaoianService : LifecycleService() {
         const val ACTION_UNLOCK = "com.xiaoian.app.UNLOCK"
         const val ACTION_TERMINAL = "com.xiaoian.app.TERMINAL"
         const val ACTION_RETARGET = "com.xiaoian.app.RETARGET"
+        const val ACTION_ADOPT = "com.xiaoian.app.ADOPT"
     }
 
     val sessionManager = SessionManagerProvider.sessionManager
@@ -69,11 +70,17 @@ class XiaoianService : LifecycleService() {
                 // that does not know about the picker.
                 displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
                 displaySize = intent.getStringExtra("displaySize"),
+                password = intent.getStringExtra("password"),
             )
             ACTION_STOP -> stopSession()
             ACTION_LOCK -> lockPhone()
             ACTION_UNLOCK -> unlockPhone()
             ACTION_TERMINAL -> openTerminal()
+            ACTION_ADOPT -> adoptSession(
+                mode = intent.getStringExtra("mode") ?: "local",
+                de = intent.getStringExtra("de") ?: return START_STICKY,
+                locked = intent.getBooleanExtra("locked", false),
+            )
             ACTION_RETARGET -> retargetSession(
                 mode = intent.getStringExtra("mode") ?: return START_STICKY,
                 displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
@@ -88,6 +95,7 @@ class XiaoianService : LifecycleService() {
         de: String,
         displayId: Int? = null,
         displaySize: String? = null,
+        password: String? = null,
     ) {
         currentMode = mode
         currentDE = de
@@ -175,7 +183,15 @@ class XiaoianService : LifecycleService() {
                 // holding the shared one that long would block every quick
                 // query the dashboard makes meanwhile. And no idle timeout --
                 // an apt transaction can legitimately go quiet for a while.
-                val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize)
+                // First start only (the dashboard asks): chpasswd input,
+                // owner-only in filesDir, for the script to consume and delete.
+                val passwordFile = password?.let {
+                    File(filesDir, "root-password-$de").apply {
+                        writeText("root:$it\n")
+                        setReadable(false, false); setReadable(true, true)
+                    }
+                }
+                val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize, passwordFile)
                 val command = "$env $scriptPath -s --$mode"
                 val sessionShell = RootShell.dedicated("session-$de")
                 val result = try {
@@ -189,18 +205,15 @@ class XiaoianService : LifecycleService() {
                     // The session wrapper is setsid'd away by the script, so
                     // closing this shell does not touch the running desktop.
                     sessionShell.close()
+                    // Normally already gone; a start that failed early did
+                    // not get as far as the chpasswd step.
+                    passwordFile?.delete()
                 }
 
                 if (result.success) {
                     sessionManager.updateState(SessionState.Running(mode, de, false))
                     updateNotification("Session running")
-                    if (de != "kde") {
-                        audioPlayer = AudioPlayer()
-                        audioPlayerJob = lifecycleScope.launch {
-                            audioPlayer?.start()
-                        }
-                    }
-                    startSessionWatchdog()
+                    attachToSession(de)
                 } else {
                     // stderr is frequently useless on its own ("Terminated"),
                     // so name the step that was running when it died.
@@ -218,6 +231,34 @@ class XiaoianService : LifecycleService() {
     }
 
     /** Creates `files/downloads` under this app's uid before root touches it. */
+    /** Sound and the watchdog: everything a running session needs from the app. */
+    private fun attachToSession(de: String) {
+        if (de != "kde") {
+            audioPlayer = AudioPlayer()
+            audioPlayerJob = lifecycleScope.launch {
+                audioPlayer?.start()
+            }
+        }
+        startSessionWatchdog()
+    }
+
+    /**
+     * A desktop that outlived the app's process -- a reinstall, or Android
+     * killing the app -- keeps running on its own, but the app came back as
+     * Idle: no stop button, no watchdog, and delete refused by the script.
+     * The dashboard finds it (see DashboardViewModel) and hands it over here.
+     */
+    private fun adoptSession(mode: String, de: String, locked: Boolean) {
+        if (sessionManager.state.value is SessionState.Idle) {
+            currentMode = mode
+            currentDE = de
+            sessionManager.updateState(SessionState.Running(mode, de, locked))
+        }
+        // Started with startForegroundService: this is owed either way.
+        startForeground(NOTIFICATION_ID, buildNotification("Session running"))
+        if (watchdogJob?.isActive != true) attachToSession(de)
+    }
+
     private fun bootstrapManagerDownloadsDir() {
         runCatching { BootstrapManager(this).rootfsTarball.parentFile?.mkdirs() }
             .onFailure { Log.w(TAG, "Could not create the downloads directory", it) }

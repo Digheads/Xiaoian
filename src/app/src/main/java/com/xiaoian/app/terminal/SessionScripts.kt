@@ -185,7 +185,109 @@ object SessionScripts {
     fun of(context: Context, spec: SessionSpec): String = when (spec) {
         is SessionSpec.Local -> local(BootstrapManager(context).prefixDir.absolutePath)
         is SessionSpec.DesktopChroot -> desktopChroot(spec.de)
+        is SessionSpec.AndroidShell -> ANDROID_SHELL
     }
+
+    /**
+     * `zygote_env`: prints zygote's environment, one `NAME=value` per line.
+     *
+     * Android's own tools need more than a root shell inherits: `am`, `pm` and
+     * `settings` start a VM through `app_process` and fail without
+     * `BOOTCLASSPATH` and the `ANDROID_*` roots. Zygote has exactly the
+     * environment every app and `adb shell` starts with, so it is copied
+     * rather than guessed -- the values move between Android releases. Its
+     * inherited socket fds (`ANDROID_SOCKET_*`) mean nothing to anyone else.
+     *
+     * Found with Android's own `pidof` (the caller sets `PIDOF`), which
+     * matches the command line. Zygote's `comm` is "main", not "zygote64",
+     * so scanning `/proc/<pid>/comm` never found it -- and forked once per
+     * process while it looked.
+     */
+    /** `echo` lines, single-quoted: banners go through the shell as-is. */
+    private fun banner(vararg lines: String): String =
+        lines.joinToString("\n") { "echo '" + it.replace("'", "'\\''") + "'" } + "\necho"
+
+    private val LOCAL_BANNER = banner(
+        "XIAOIAN -- the app's own small Debian. No desktop needed.",
+        "  /android           the whole Android filesystem (= /mnt/android)",
+        "  /android/storage/emulated/0   internal storage (DCIM, Download, ...)",
+        "  android CMD        run an Android command, e.g.:",
+        "                       android dumpsys battery | grep level",
+        "  android            an Android root shell here; exit comes back",
+    )
+
+    private val ANDROID_BANNER = banner(
+        "ANDROID -- a root shell on the phone itself, like adb shell + su.",
+        "  dumpsys, am, pm, settings, logcat work. Commands act on the phone.",
+    )
+
+    private fun desktopBanner(name: String) = banner(
+        "$name -- the $name desktop's Debian tree.",
+        "  Internal storage: /$DESKTOP_STORAGE",
+        "  Android commands wont work: open a XIAOIAN or ANDROID terminal.",
+    )
+
+    private val ZYGOTE_ENV = """
+        zygote_env() {
+            set -- ${'$'}(${'$'}PIDOF zygote64 zygote 2>/dev/null)
+            [ -n "${'$'}1" ] || return 1
+            tr '\0' '\n' < "/proc/${'$'}1/environ" | grep -v -e '^ANDROID_SOCKET_' -e '^ANDROID_BOOTLOGO='
+        }
+    """.trimIndent()
+
+    /**
+     * The Android root shell. Starts in `/` like `adb shell`; Android's mksh
+     * reads `/system/etc/mkshrc` for its usual prompt. Zygote's environment is
+     * word-split into `env`: its values are paths and colon lists, no spaces.
+     */
+    private val ANDROID_SHELL = """
+        PIDOF=/system/bin/pidof
+        $ZYGOTE_ENV
+        $ANDROID_BANNER
+        cd /
+        exec env -i ${'$'}(zygote_env) HOME=/ TERM=xterm-256color /system/bin/sh -i
+    """.trimIndent()
+
+    /**
+     * `/usr/local/bin/android` in the tool rootfs: runs an Android command on
+     * the host from inside the chroot, e.g. `android dumpsys input | grep foo`,
+     * so Debian's tools and Android's can share a pipeline. Without arguments
+     * it opens an Android shell in place.
+     *
+     * It chroots into [ANDROID_MOUNT], a recursive bind of the real `/` --
+     * /system, /apex, /linkerconfig and /dev included -- so the binaries find
+     * their linker, libraries and binder exactly as on the host.
+     */
+    private val ANDROID_WRAPPER_BODY = """
+        #!/bin/sh
+        # Runs an Android command on the host, outside this chroot.
+        # Written by Xiaoian on every terminal start; edits are overwritten.
+        A=/$ANDROID_MOUNT
+        if [ ! -x "${'$'}A/system/bin/sh" ]; then
+            echo "android: ${'$'}A is not mounted; open a new XIAOIAN terminal." >&2
+            exit 1
+        fi
+        PIDOF="chroot ${'$'}A /system/bin/pidof"
+        $ZYGOTE_ENV
+        E=${'$'}(zygote_env) || { echo "android: zygote not found" >&2; exit 1; }
+        if [ "${'$'}#" -eq 0 ]; then
+            exec chroot "${'$'}A" /system/bin/env -i ${'$'}E HOME=/ TERM="${'$'}TERM" /system/bin/sh -i
+        fi
+        exec chroot "${'$'}A" /system/bin/env -i ${'$'}E HOME=/ TERM="${'$'}TERM" /system/bin/sh -c 'exec "${'$'}@"' android "${'$'}@"
+    """.trimIndent()
+
+    /**
+     * Writes [ANDROID_WRAPPER_BODY] into the rootfs, fresh on every session
+     * start so an app update updates it too. One single-quoted `printf`
+     * argument per line rather than a heredoc: the session script around it
+     * keeps its indentation, and an indented heredoc terminator never ends.
+     */
+    private val ANDROID_WRAPPER: String =
+        "mkdir -p \"${'$'}R/usr/local/bin\"\n" +
+            "printf '%s\\n' " +
+            ANDROID_WRAPPER_BODY.lines().map { it.trim() }.joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" } +
+            " > \"${'$'}R/usr/local/bin/android\"\n" +
+            "chmod 0755 \"${'$'}R/usr/local/bin/android\""
 
     /**
      * The tool rootfs is a plain Debian tree with nothing mounted into it, and
@@ -224,6 +326,8 @@ object SessionScripts {
         ensure_mount /dev/pts "${'$'}R/dev/pts" --bind /dev/pts "${'$'}R/dev/pts"
 
         $ANDROID_BIND
+        $ANDROID_WRAPPER
+        $LOCAL_BANNER
 
         exec chroot "${'$'}R" /usr/bin/env -i \
             HOME=/root \
@@ -314,7 +418,7 @@ object SessionScripts {
             // exports WAYLAND_DISPLAY inside the session and nothing writes it
             // down, so read it back off the runtime dir.
             """
-            W=${'$'}(ls "${'$'}R/run/user/0" 2>/dev/null | grep -m1 '^wayland-[0-9]*${'$'}')
+            W=${'$'}(${'$'}NS ls "${'$'}R/run/user/0" 2>/dev/null | grep -m1 '^wayland-[0-9]*${'$'}')
             [ -n "${'$'}W" ] && EXTRA="WAYLAND_DISPLAY=${'$'}W"
             """.trimIndent()
         } else {
@@ -339,11 +443,19 @@ object SessionScripts {
                 [ -n "${'$'}spid" ] && [ -d "/proc/${'$'}spid" ] && running=1
             fi
 
+            NS=""
             if [ "${'$'}running" = 1 ]; then
+                # A desktop started by an earlier app process -- before an
+                # update, or a crash -- mounted its chroot in that process's
+                # mount namespace, which this shell is not in. Join it through
+                # the session wrapper, which lives there.
                 if ! grep -q " ${'$'}R/proc " /proc/mounts; then
-                    echo "The $name chroot's mounts are not visible from this shell."
-                    echo 'The desktop is running in a different mount namespace.'
-                    exit 1
+                    NS="nsenter -t ${'$'}spid -m --"
+                    if ! ${'$'}NS grep -q " ${'$'}R/proc " /proc/mounts 2>/dev/null; then
+                        echo "The $name chroot's mounts are not visible from this shell,"
+                        echo "and its mount namespace could not be joined."
+                        exit 1
+                    fi
                 fi
                 $liveEnv
             else
@@ -365,7 +477,8 @@ object SessionScripts {
                 echo '[*] adds its own mounts on top of these.'
             fi
 
-            exec chroot "${'$'}R" /usr/bin/env -i \
+            ${desktopBanner(name)}
+            exec ${'$'}NS chroot "${'$'}R" /usr/bin/env -i \
                 HOME=/root \
                 TERM=xterm-256color \
                 PATH=$PATH \

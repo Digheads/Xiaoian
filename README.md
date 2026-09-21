@@ -63,11 +63,14 @@ KDE needs Android 11; XFCE runs from Android 9.
    *Not installed*.
 2. Pick **KDE (Wayland)** or **XFCE (X11)**, pick a display mode, and press
    **START DESKTOP**.
-3. The first start installs everything: the Debian rootfs, the GPU drivers, and
+3. The first start of each desktop asks for a **root password** for it — each
+   desktop has its own. The app does not keep it; change it later with
+   `passwd` in that desktop's terminal.
+4. The first start installs everything: the Debian rootfs, the GPU drivers, and
    the desktop's packages. Expect **10–30 minutes**, depending on your network
    and phone. Progress is shown on the dashboard and in the notification, step
    by step — including live `apt` progress.
-4. When it is ready the desktop window opens by itself. You can also reopen it
+5. When it is ready the desktop window opens by itself. You can also reopen it
    later with **OPEN DESKTOP**.
 
 The session survives leaving the app. A notification keeps it visible with
@@ -115,13 +118,19 @@ control works (`Ctrl-C` interrupts, `Ctrl-Z` suspends), and full-screen programs
 like `vim`, `htop` and `less` behave the way they should. Colours, mouse
 reporting and text selection all work.
 
-It can open three kinds of session:
+It can open four kinds of session:
 
 | | |
 |---|---|
-| **Local** | A small Debian bootstrap environment that belongs to the app. It needs no desktop at all, and the app installs it the first time you ask for it. |
+| **Xiaoian** | A small Debian bootstrap environment that belongs to the app. It needs no desktop at all, and the app installs it the first time you ask for it. |
+| **Android** | A root shell on Android itself, like `adb shell` followed by `su`: `dumpsys`, `am`, `pm`, `settings`, `logcat` and the rest all work. Needs nothing installed. |
 | **XFCE** | A shell inside the XFCE desktop's Debian tree. |
 | **KDE** | A shell inside the KDE desktop's Debian tree. |
+
+In a **Xiaoian** terminal, `android` runs an Android command without leaving
+Debian, so the two can share a pipeline — `android dumpsys input | grep -i touch`,
+`android settings list global | less`. On its own, `android` opens an Android
+shell in place; `exit` brings you back.
 
 **Neither chroot needs its desktop to be running.** If the desktop is up, the
 session joins it — `DISPLAY` or the Wayland socket is set, so you can start GUI

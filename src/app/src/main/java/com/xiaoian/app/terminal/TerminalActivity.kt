@@ -36,9 +36,11 @@ import com.xiaoian.app.R
 import com.xiaoian.app.SettingsActivity
 import com.xiaoian.app.service.BootstrapManager
 import com.xiaoian.app.settings.AppPrefs
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 
 /**
@@ -63,6 +65,9 @@ class TerminalActivity : ComponentActivity() {
         /** Matches the desktop bar; see anland's MainActivity.buildExtraKeysBar. */
         private const val BAR_ROW_DP = 37.5f
 
+        /** Long enough for a cold chroot start; the spinner never outlives it. */
+        private const val FIRST_OUTPUT_TIMEOUT_MS = 10_000L
+
         /**
          * [spec] null means "just show the terminal": whatever is already open,
          * or the chooser if nothing is.
@@ -76,6 +81,7 @@ class TerminalActivity : ComponentActivity() {
         /** What can be opened, in the order the chooser lists them. */
         private val CHOICES = listOf(
             SessionSpec.Local,
+            SessionSpec.AndroidShell,
             SessionSpec.DesktopChroot("xfce"),
             SessionSpec.DesktopChroot("kde"),
         )
@@ -212,9 +218,12 @@ class TerminalActivity : ComponentActivity() {
     private fun chooseSession() {
         val labels = CHOICES.map { spec ->
             when (spec) {
-                is SessionSpec.Local -> "Local"
+                // The tab shows only the short label; the chooser says what
+                // each one is, since two of them are Debian and one is not.
+                is SessionSpec.Local -> "Xiaoian \u2013 Debian, no desktop needed"
+                is SessionSpec.AndroidShell -> "Android \u2013 root shell"
                 is SessionSpec.DesktopChroot ->
-                    if (spec.de == "kde") "KDE" else "XFCE"
+                    if (spec.de == "kde") "KDE \u2013 desktop chroot" else "XFCE \u2013 desktop chroot"
             }
         }.toTypedArray()
         AlertDialog.Builder(this)
@@ -268,10 +277,18 @@ class TerminalActivity : ComponentActivity() {
     private fun openSession(spec: SessionSpec) {
         lifecycleScope.launch {
             if (spec is SessionSpec.Local && !ensureToolRootfs()) return@launch
+            // The spinner stays until the shell has printed something: the
+            // session starts once its view is attached, and until the first
+            // output arrives the tab is just an empty black screen.
             val result = withBusy("Starting ${spec.label}...") {
-                TerminalSessions.open(this@TerminalActivity, spec)
+                TerminalSessions.open(this@TerminalActivity, spec).onSuccess { session ->
+                    val ready = CompletableDeferred<Unit>()
+                    awaitingOutput = session.terminal to ready
+                    select(session)
+                    withTimeoutOrNull(FIRST_OUTPUT_TIMEOUT_MS) { ready.await() }
+                    awaitingOutput = null
+                }
             }
-            result.onSuccess { select(it) }
             result.onFailure {
                 Toast.makeText(
                     this@TerminalActivity,
@@ -349,6 +366,9 @@ class TerminalActivity : ComponentActivity() {
         }
         return ok
     }
+
+    /** The session [openSession] is waiting on for its first output. */
+    private var awaitingOutput: Pair<TerminalSession, CompletableDeferred<Unit>>? = null
 
     private fun select(session: XiaoianSession) {
         current = session
@@ -509,6 +529,7 @@ class TerminalActivity : ComponentActivity() {
     private val sessionListener = object : TerminalSessionClient {
         override fun onTextChanged(changedSession: TerminalSession) {
             if (current?.terminal === changedSession) terminalView.onScreenUpdated()
+            awaitingOutput?.let { (s, ready) -> if (s === changedSession) ready.complete(Unit) }
         }
 
         override fun onTitleChanged(changedSession: TerminalSession) {
@@ -517,6 +538,7 @@ class TerminalActivity : ComponentActivity() {
 
         override fun onSessionFinished(finishedSession: TerminalSession) {
             renderTabs(TerminalSessions.sessions.value)
+            awaitingOutput?.let { (s, ready) -> if (s === finishedSession) ready.complete(Unit) }
         }
 
         override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {

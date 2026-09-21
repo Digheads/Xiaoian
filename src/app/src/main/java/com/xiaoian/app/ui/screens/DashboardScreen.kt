@@ -67,6 +67,17 @@ fun DashboardScreen(
         if (!hasExternalDisplay && selectedMode != "local") selectedMode = "local"
     }
     var showUninstallDialog by remember { mutableStateOf<String?>(null) }
+    var askPasswordFor by remember { mutableStateOf<String?>(null) }
+    askPasswordFor?.let { de ->
+        RootPasswordDialog(
+            deName = if (de == "kde") "KDE" else "XFCE",
+            onCancel = { askPasswordFor = null },
+            onConfirm = { password ->
+                askPasswordFor = null
+                viewModel.startSession(selectedMode, de, selectedDisplay, password)
+            },
+        )
+    }
     // Once, on first launch. The info button opens the full screen instead.
     var showDeviceNotice by rememberSaveable { mutableStateOf(viewModel.showDeviceNoticeOnStart) }
     if (showDeviceNotice) {
@@ -170,7 +181,12 @@ fun DashboardScreen(
             Spacer(modifier = Modifier.height(32.dp))
             
             Button(
-                onClick = { viewModel.startSession(selectedMode, selectedDE, selectedDisplay) },
+                onClick = {
+                    // First start of this desktop: ask for its root password.
+                    val info = if (selectedDE == "kde") kdeStorage else xfceStorage
+                    if (info?.installed == true) viewModel.startSession(selectedMode, selectedDE, selectedDisplay)
+                    else askPasswordFor = selectedDE
+                },
                 enabled = !storageLoading,
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
@@ -240,10 +256,24 @@ fun DashboardScreen(
                     Text(
                         uninstallState.output,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // One line, like the setup progress: a long path would
+                        // otherwise wrap and make the card jump.
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                 }
             }
+            Spacer(modifier = Modifier.height(8.dp))
+        } else if (uninstallState.output.startsWith("Error")) {
+            // A refused delete used to vanish with the progress card.
+            Text(
+                "Could not remove ${if (uninstallState.de == "kde") "KDE (Wayland)" else "XFCE (X11)"}: " +
+                    uninstallState.output.removePrefix("Error: "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth(),
+            )
             Spacer(modifier = Modifier.height(8.dp))
         }
         
@@ -493,7 +523,13 @@ fun InstalledEnvironmentCard(
                             }
                         }
                         if (retargeting) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Same box as the button it replaces, so nothing
+                            // shifts up into the radio row while it runs.
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(ButtonDefaults.MinHeight),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Switching...", style = MaterialTheme.typography.bodySmall)
