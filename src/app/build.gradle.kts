@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,8 +19,23 @@ android {
         versionName = "0.1.0-alpha"
     }
 
+    // Release signing from src/keystore.properties (git-ignored, see README).
+    // Without it the release build stays unsigned, as before, rather than
+    // failing on a machine that has no key.
+    val keystoreProps = rootProject.file("keystore.properties")
+    val releaseSigning = if (keystoreProps.exists()) {
+        val props = Properties().apply { keystoreProps.inputStream().use { load(it) } }
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(props.getProperty("storeFile"))
+            storePassword = props.getProperty("storePassword")
+            keyAlias = props.getProperty("keyAlias")
+            keyPassword = props.getProperty("keyPassword")
+        }
+    } else null
+
     buildTypes {
         release {
+            signingConfig = releaseSigning
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

@@ -265,6 +265,30 @@ the next unmount.
 
 ---
 
+## Release build
+
+`./gradlew :app:assembleRelease` (in `src/`) produces a signed
+`app-release.apk` when `src/keystore.properties` exists:
+
+```
+storeFile=xiaoian-release.jks
+storePassword=...
+keyAlias=xiaoian
+keyPassword=...
+```
+
+Both that file and the keystore are git-ignored. **Keep a copy of both**:
+Android only installs an update that is signed with the same key, so without
+them no update can be released for devices that already have the app. Without
+`keystore.properties`, the release build is unsigned and cannot be installed.
+
+A release build cannot be installed over a debug build, or the other way
+round, because they are signed with different keys. Uninstall the other one
+first. This removes the app's settings, but not the installed desktops, which
+live under `/data/local`.
+
+---
+
 ## Licence
 
 GPLv3. See [LICENCE](LICENCE). The app contains code from

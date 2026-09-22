@@ -36,3 +36,6 @@ google-services.json
 tools
 # Machine-specific editor settings (JDK paths)
 .vscode/
+
+# Release signing credentials (see README, "Release build")
+keystore.properties

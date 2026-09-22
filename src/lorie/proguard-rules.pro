@@ -28,3 +28,17 @@
 -keepclassmembers class * extends android.preference.Preference {
     void onSetInitialValue(boolean, java.lang.Object);
 }
+
+# Called from native code by name (activity.cpp, renderer.cpp,
+# cmdentrypoint.cpp) and nowhere in Java, so R8 would drop them.
+-keepclassmembers class com.termux.x11.LorieView {
+    com.termux.x11.MainActivity activity;
+    void setClipboardText(java.lang.String);
+    void requestClipboard();
+    void onSyncReply(int);
+    void setRendererViewport(int, int, int, int, float, float, float, float);
+}
+-keepclassmembers class com.termux.x11.CmdEntryPoint {
+    void sendBroadcast();
+    void sendBroadcastDelayed();
+}
