@@ -1,9 +1,7 @@
 package com.xiaoian.app.terminal
 
 import android.util.SparseIntArray
-import android.view.KeyEvent
 import com.anland.termux.ExtraKeysBar
-import com.anland.termux.KeyCodeMapper
 import com.termux.terminal.KeyHandler
 import com.termux.view.TerminalView
 
@@ -37,7 +35,7 @@ class ExtraKeysSender(
         // One event per key press, on the down; the up would repeat it.
         if (action != ACTION_DOWN) return
 
-        val keyCode = EVDEV_TO_KEYCODE.get(evdev, -1)
+        val keyCode = com.xiaoian.app.input.Evdev.toKeyCode(evdev)
         if (keyCode < 0) return
         terminalView.handleKeyCode(keyCode, keyMod)
     }
@@ -76,26 +74,6 @@ class ExtraKeysSender(
             put(100, KeyHandler.KEYMOD_ALT)   // KEY_RIGHTALT
             put(42, KeyHandler.KEYMOD_SHIFT)  // KEY_LEFTSHIFT
             put(54, KeyHandler.KEYMOD_SHIFT)  // KEY_RIGHTSHIFT
-        }
-
-        /**
-         * The inverse of [KeyCodeMapper.getScanCode].
-         *
-         * Built by walking the Android key codes rather than written out by
-         * hand, so it cannot drift from the forward table. Lowest key code
-         * wins where several map to the same scan code -- the forward table has
-         * a few of those (SEARCH and ASSIST both sit on META's 125), and none
-         * of them matter to a terminal.
-         */
-        private val EVDEV_TO_KEYCODE = SparseIntArray().apply {
-            for (keyCode in 0..KeyEvent.getMaxKeyCode()) {
-                val scan = KeyCodeMapper.getScanCode(keyCode)
-                if (scan >= 0 && indexOfKey(scan) < 0) put(scan, keyCode)
-            }
-            // The forward table has no entry for these two, but the bar's
-            // default layout has PGUP and PGDN keys on them.
-            put(104, KeyEvent.KEYCODE_PAGE_UP)
-            put(109, KeyEvent.KEYCODE_PAGE_DOWN)
         }
     }
 }

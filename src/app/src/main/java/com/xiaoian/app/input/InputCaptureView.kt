@@ -37,8 +37,8 @@ class InputCaptureView(context: Context, private val input: DesktopInput) : View
             private var composing = ""
 
             private fun replaceComposing(new: String) {
-                repeat(composing.length) { input.key(KeyEvent.KEYCODE_DEL) }
-                input.text(new)
+                repeat(composing.length) { input.typeKey(KeyEvent.KEYCODE_DEL) }
+                input.typeText(new)
                 composing = new
             }
 
@@ -59,8 +59,8 @@ class InputCaptureView(context: Context, private val input: DesktopInput) : View
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(beforeLength) { input.key(KeyEvent.KEYCODE_DEL) }
-                repeat(afterLength) { input.key(KeyEvent.KEYCODE_FORWARD_DEL) }
+                repeat(beforeLength) { input.typeKey(KeyEvent.KEYCODE_DEL) }
+                repeat(afterLength) { input.typeKey(KeyEvent.KEYCODE_FORWARD_DEL) }
                 return true
             }
 
@@ -70,7 +70,7 @@ class InputCaptureView(context: Context, private val input: DesktopInput) : View
             }
 
             override fun performEditorAction(actionCode: Int): Boolean {
-                input.key(KeyEvent.KEYCODE_ENTER)
+                input.typeKey(KeyEvent.KEYCODE_ENTER)
                 return true
             }
         }
@@ -86,8 +86,8 @@ class InputCaptureView(context: Context, private val input: DesktopInput) : View
         val ch = event.unicodeChar
         when {
             event.keyCode == KeyEvent.KEYCODE_ENTER || event.keyCode == KeyEvent.KEYCODE_DEL ||
-                event.keyCode == KeyEvent.KEYCODE_FORWARD_DEL || ch == 0 -> input.key(event.keyCode)
-            else -> input.text(String(Character.toChars(ch)))
+                event.keyCode == KeyEvent.KEYCODE_FORWARD_DEL || ch == 0 -> input.typeKey(event.keyCode)
+            else -> input.typeText(String(Character.toChars(ch)))
         }
     }
 }

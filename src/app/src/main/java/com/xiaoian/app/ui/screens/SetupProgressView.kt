@@ -62,7 +62,7 @@ fun SetupProgressView(progress: SetupProgress, modifier: Modifier = Modifier) {
             overflow = TextOverflow.Ellipsis,
         )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         progress.steps.forEach { StepRow(it) }
     }
 }

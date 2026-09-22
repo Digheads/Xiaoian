@@ -56,6 +56,11 @@ public final class XiaoianInput {
         if (evdev > 0) Native.nativeSendKey(down ? 0 : 1, evdev);
     }
 
+    /** An evdev scan code, as the extra-keys bar sends them. */
+    public static void keyEvdev(int evdev, boolean down) {
+        if (activity() != null && evdev > 0) Native.nativeSendKey(down ? 0 : 1, evdev);
+    }
+
     public static void text(String s) {
         if (activity() == null || s.isEmpty()) return;
         Native.nativeSendTextInput(s.getBytes(StandardCharsets.UTF_8));

@@ -1343,6 +1343,70 @@ XFWM
         echo "[*] Existing XFCE window-manager config found; leaving it alone."
     fi
 
+    # Nothing in a chroot to lock, switch to, suspend or shut down: no locker,
+    # no display manager, no init of its own. Lock did nothing and Switch User
+    # took the desktop down. Log Out stays -- it ends the session properly.
+    # Rewritten on every start, so older installs get it too.
+    #
+    # Shut Down / Restart in the Log Out dialog: xfce4-session's own kiosk file.
+    mkdir -p "$DEBIAN_ROOTFS/etc/xdg/xfce4/kiosk"
+    cat << 'KIOSKRC' > "$DEBIAN_ROOTFS/etc/xdg/xfce4/kiosk/kioskrc"
+[xfce4-session]
+Shutdown=NONE
+KIOSKRC
+
+    # The rest lives in xfconf, which only a running session can change: a
+    # system-wide xfce4-panel.xml would replace the default panel layout of a
+    # user who has none yet. So an autostart entry sets it through
+    # xfconf-query, leaving everything else the user chose alone.
+    mkdir -p "$DEBIAN_ROOTFS/usr/local/bin" "$DEBIAN_ROOTFS/etc/xdg/autostart"
+    cat << 'XFCE_KIOSK' > "$DEBIAN_ROOTFS/usr/local/bin/xiaoian-xfce-kiosk"
+#!/bin/sh
+# Written by Xiaoian on every desktop start. Hides what a chroot cannot do.
+
+# The panel writes its default layout on its first start; wait for it.
+i=0
+while ! xfconf-query -c xfce4-panel -p /plugins >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -ge 20 ] && break
+    sleep 0.5
+done
+
+# Action Buttons: only Log Out is left, so its separators go as well.
+HIDE=" lock-screen switch-user suspend hibernate hybrid-sleep shutdown restart separator "
+DEFAULT="+lock-screen +switch-user +separator +suspend -hibernate -hybrid-sleep -separator +shutdown -restart +separator +logout -logout-dialog"
+for p in $(xfconf-query -c xfce4-panel -l 2>/dev/null | grep -E '^/plugins/plugin-[0-9]+$'); do
+    [ "$(xfconf-query -c xfce4-panel -p "$p" 2>/dev/null)" = actions ] || continue
+    items=$(xfconf-query -c xfce4-panel -p "$p/items" 2>/dev/null | grep -E '^[+-]')
+    [ -n "$items" ] || items=$DEFAULT
+    set --
+    for it in $items; do
+        name=${it#?}
+        case "$HIDE" in *" $name "*) it="-$name" ;; esac
+        # --set=VALUE: a hidden item starts with '-' and must not read as an option.
+        set -- "$@" --type=string "--set=$it"
+    done
+    xfconf-query -c xfce4-panel -p "$p/items" -n --force-array "$@"
+done
+
+# The Log Out dialog.
+for k in ShowSuspend ShowHibernate ShowHybridSleep ShowSwitchUser; do
+    xfconf-query -c xfce4-session -p "/shutdown/$k" -n -t bool -s false
+done
+
+# Ctrl+Alt+L (xflock4): there is no locker to run.
+xfconf-query -c xfce4-keyboard-shortcuts -p '/commands/custom/<Primary><Alt>l' -r 2>/dev/null
+exit 0
+XFCE_KIOSK
+    chmod 755 "$DEBIAN_ROOTFS/usr/local/bin/xiaoian-xfce-kiosk"
+    cat << 'XFCE_KIOSK_DESKTOP' > "$DEBIAN_ROOTFS/etc/xdg/autostart/xiaoian-xfce-kiosk.desktop"
+[Desktop Entry]
+Type=Application
+Name=Xiaoian session settings
+Exec=/usr/local/bin/xiaoian-xfce-kiosk
+OnlyShowIn=XFCE;
+NoDisplay=true
+XFCE_KIOSK_DESKTOP
+
     step packages
     echo "[*] Checking Debian dependencies and GPU drivers..."
 

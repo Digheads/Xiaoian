@@ -1526,20 +1526,33 @@ Autolock=false
 LockOnResume=false
 KSCREENLOCK
 
-    # No manual lock either (Ctrl+Alt+L, the menu entry). The phone's own
-    # lock and the app's virtual lock cover the phone, and a desktop locked
-    # by accident -- root may well have no password -- could not be unlocked.
-    # Kiosk restriction, system-wide and immutable ([$i]), so the user's own
-    # kdeglobals -- theme, fonts -- is left alone.
+    # Nothing in a chroot to lock, switch to or shut down: no display manager,
+    # no init of its own. No manual lock either (Ctrl+Alt+L, the menu entry):
+    # the phone's own lock and the app's virtual lock cover the phone. Log Out
+    # stays -- it ends the session properly.
+    # Kiosk restrictions, system-wide and immutable ([$i]), so the user's own
+    # kdeglobals -- theme, fonts -- is left alone. A marked block, replaced on
+    # every start (older installs had just the lock_screen pair, unmarked).
     KIOSK="$DEBIAN_ROOTFS/etc/xdg/kdeglobals"
     mkdir -p "$DEBIAN_ROOTFS/etc/xdg"
-    if ! grep -q '^action/lock_screen=false' "$KIOSK" 2>/dev/null; then
-        cat << 'KIOSK_EOF' >> "$KIOSK"
-
+    if [ -f "$KIOSK" ]; then
+        sed -i -e '/^# xiaoian-kiosk begin$/,/^# xiaoian-kiosk end$/d' \
+            -e '/^\[KDE Action Restrictions\]\[\$i\]$/{N;/\naction\/lock_screen=false$/d}' "$KIOSK"
+    fi
+    cat << 'KIOSK_EOF' >> "$KIOSK"
+# xiaoian-kiosk begin
 [KDE Action Restrictions][$i]
 action/lock_screen=false
+action/switch_user=false
+action/start_new_session=false
+# xiaoian-kiosk end
 KIOSK_EOF
-    fi
+
+    # Shut Down and Restart in the Leave menu and the logout screen.
+    cat << 'KSMSERVER_EOF' > "$DEBIAN_ROOTFS/etc/xdg/ksmserverrc"
+[General][$i]
+offerShutdown=false
+KSMSERVER_EOF
 
     cat << 'POWERDEVIL' > "$KDE_CFG_DIR/powermanagementprofilesrc"
 [AC][DimDisplay]

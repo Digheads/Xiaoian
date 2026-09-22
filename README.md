@@ -102,9 +102,9 @@ the phone into a touchpad and keyboard for the desktop:
 - two fingers scroll;
 - a tap followed by a touch-and-drag holds the button down, for dragging.
 
-The button at the bottom right brings up the phone's keyboard with a row of
-special keys: Esc, Tab, Ctrl, Alt, Super, Shift, arrows, Home/End, PgUp/PgDn
-and Del. A modifier applies to the next key; a long press keeps it on. Touching
+The button at the bottom right brings up the phone's keyboard with the same
+special-keys bar as under the terminal, using the same layout from Settings. A
+modifier applies to the next key; a long press keeps it on. Touching
 the touchpad puts the keyboard away. The touchpad closes by itself when the
 session stops, leaves extend mode or is locked.
 

@@ -2,43 +2,24 @@ package com.xiaoian.app.input
 
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import com.anland.termux.ExtraKeysBar
 
 /**
  * Input for the running desktop, whichever frontend it has: both expose the
  * same small static surface (XiaoianInput in each module), since their
  * activities are AppCompat ones the app cannot compile against.
  *
- * Also owns the sticky modifiers of the special-keys bar, so a character
- * typed on the soft keyboard while CTRL is on goes out as Ctrl+key rather
- * than as text.
+ * Also the [ExtraKeysBar.Sender] for the touchpad's special-keys bar -- the
+ * same bar, and the same layout setting, as under the terminal. The bar
+ * speaks evdev; the X11 side wants Android key codes, see [Evdev].
  */
-class DesktopInput(private val de: String) {
+class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
 
-    enum class Mod(val keyCode: Int, val label: String) {
-        CTRL(KeyEvent.KEYCODE_CTRL_LEFT, "CTRL"),
-        ALT(KeyEvent.KEYCODE_ALT_LEFT, "ALT"),
-        SHIFT(KeyEvent.KEYCODE_SHIFT_LEFT, "SHIFT"),
-        SUPER(KeyEvent.KEYCODE_META_LEFT, "SUPER"),
-    }
+    /** The bar, once built: its modifiers apply to soft-keyboard input too. */
+    var bar: ExtraKeysBar? = null
 
-    enum class ModState { OFF, ONCE, LOCKED }
-
-    private val mods = Mod.entries.associateWith { ModState.OFF }.toMutableMap()
-
-    /** Called whenever a modifier changes, so the bar can redraw its keys. */
-    var onModsChanged: (() -> Unit)? = null
-
-    fun modState(mod: Mod): ModState = mods.getValue(mod)
-
-    /** Tap: off -> once -> off. Long press: locked, or off again. */
-    fun toggleMod(mod: Mod, lock: Boolean) {
-        mods[mod] = when {
-            lock -> if (mods[mod] == ModState.LOCKED) ModState.OFF else ModState.LOCKED
-            mods[mod] == ModState.OFF -> ModState.ONCE
-            else -> ModState.OFF
-        }
-        onModsChanged?.invoke()
-    }
+    var onToggleKeyboard: () -> Unit = {}
+    var onOpenSettings: () -> Unit = {}
 
     private val kde get() = de == "kde"
 
@@ -54,51 +35,65 @@ class DesktopInput(private val de: String) {
     fun scroll(dx: Float, dy: Float) =
         if (kde) com.anland.termux.XiaoianInput.scroll(dx, dy) else com.termux.x11.XiaoianInput.scroll(dx, dy)
 
-    private fun rawKey(keyCode: Int, down: Boolean) =
-        if (kde) com.anland.termux.XiaoianInput.key(keyCode, down) else com.termux.x11.XiaoianInput.key(keyCode, down)
-
     fun click(button: Int) {
         button(button, true)
         button(button, false)
     }
 
-    /** A full press with the active modifiers held around it; ONCE ones are used up. */
-    fun key(keyCode: Int, extraShift: Boolean = false) {
-        val held = Mod.entries.filter { mods[it] != ModState.OFF }.map { it.keyCode }.toMutableList()
-        if (extraShift && KeyEvent.KEYCODE_SHIFT_LEFT !in held) held += KeyEvent.KEYCODE_SHIFT_LEFT
-        held.forEach { rawKey(it, true) }
-        rawKey(keyCode, true)
-        rawKey(keyCode, false)
-        held.asReversed().forEach { rawKey(it, false) }
-        consumeOnce()
+    private fun rawText(s: String) =
+        if (kde) com.anland.termux.XiaoianInput.text(s) else com.termux.x11.XiaoianInput.text(s)
+
+    private fun rawEvdev(evdev: Int, down: Boolean) {
+        if (kde) {
+            com.anland.termux.XiaoianInput.keyEvdev(evdev, down)
+        } else {
+            val keyCode = Evdev.toKeyCode(evdev)
+            if (keyCode >= 0) com.termux.x11.XiaoianInput.key(keyCode, down)
+        }
+    }
+
+    // ---- ExtraKeysBar.Sender ---------------------------------------------
+
+    override fun key(action: Int, evdev: Int) = rawEvdev(evdev, action == 0)
+    override fun text(s: String?) { if (!s.isNullOrEmpty()) rawText(s) }
+    override fun toggleKeyboard() = onToggleKeyboard()
+    /** No floating virtual keyboard here; the system IME is the only one. */
+    override fun toggleVirtualKeyboard() = onToggleKeyboard()
+    override fun openSettings() = onOpenSettings()
+
+    // ---- soft keyboard ---------------------------------------------------
+
+    /** A full press of an Android key, wrapped in whatever the bar has held. */
+    fun typeKey(keyCode: Int) {
+        val evdev = Evdev.fromKeyCode(keyCode)
+        if (evdev < 0) return
+        val b = bar
+        if (b != null && b.hasActiveModifier()) {
+            b.sendKeyComboFromExternal(evdev)
+        } else {
+            rawEvdev(evdev, true)
+            rawEvdev(evdev, false)
+        }
     }
 
     /**
-     * Text from the soft keyboard. With a modifier on, each character goes
-     * out as a key press instead -- Ctrl+C has to be a key combination, not
-     * the letter c.
+     * Text from the soft keyboard. With a bar modifier on, each character
+     * goes out as a key press instead -- Ctrl+C has to be a key combination,
+     * not the letter c.
      */
-    fun text(s: String) {
+    fun typeText(s: String) {
         if (s.isEmpty()) return
-        if (Mod.entries.none { mods[it] != ModState.OFF }) {
-            if (kde) com.anland.termux.XiaoianInput.text(s) else com.termux.x11.XiaoianInput.text(s)
+        val b = bar
+        if (b == null || !b.hasActiveModifier()) {
+            rawText(s)
             return
         }
         val map = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
         for (ch in s) {
-            val events = map.getEvents(charArrayOf(ch))
-            val down = events?.firstOrNull { it.action == KeyEvent.ACTION_DOWN && !KeyEvent.isModifierKey(it.keyCode) }
-            if (down == null) {
-                if (kde) com.anland.termux.XiaoianInput.text(ch.toString()) else com.termux.x11.XiaoianInput.text(ch.toString())
-                continue
-            }
-            key(down.keyCode, extraShift = down.isShiftPressed)
+            val down = map.getEvents(charArrayOf(ch))
+                ?.firstOrNull { it.action == KeyEvent.ACTION_DOWN && !KeyEvent.isModifierKey(it.keyCode) }
+            val evdev = down?.let { Evdev.fromKeyCode(it.keyCode) } ?: -1
+            if (evdev < 0) rawText(ch.toString()) else b.sendKeyComboFromExternal(evdev)
         }
-    }
-
-    private fun consumeOnce() {
-        var changed = false
-        for (m in Mod.entries) if (mods[m] == ModState.ONCE) { mods[m] = ModState.OFF; changed = true }
-        if (changed) onModsChanged?.invoke()
     }
 }
