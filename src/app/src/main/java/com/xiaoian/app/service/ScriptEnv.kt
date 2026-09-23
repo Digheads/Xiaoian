@@ -1,6 +1,7 @@
 package com.xiaoian.app.service
 
 import android.content.Context
+import com.xiaoian.app.model.Desktop
 import java.io.File
 
 /**
@@ -80,17 +81,15 @@ object ScriptEnv {
     }
 
     /**
-     * Where a desktop's script and chroot live. The same `if (de == "kde")`
-     * ternary used to sit at five call sites, which is how two of them end up
-     * disagreeing.
+     * Where a desktop's script and chroot live. These used to be `if (de ==
+     * "kde")` ternaries copied at five call sites, which is how two of them
+     * ended up disagreeing; the mapping now lives on [Desktop] itself.
      */
-    fun infraRoot(de: String): String =
-        if (de == "kde") "/data/local/xiaoian-wayland-kde" else "/data/local/xiaoian-x11-xfce"
+    fun infraRoot(de: Desktop): String = de.infraRoot
 
     /** File name of the desktop's start script, as bundled in the APK assets. */
-    fun scriptName(de: String): String =
-        if (de == "kde") "xiaoian-wayland-kde.sh" else "xiaoian-x11-xfce.sh"
+    fun scriptName(de: Desktop): String = de.scriptName
 
     /** Absolute path the script is installed to and run from. */
-    fun scriptPath(de: String): String = "${infraRoot(de)}/${scriptName(de)}"
+    fun scriptPath(de: Desktop): String = de.scriptPath
 }

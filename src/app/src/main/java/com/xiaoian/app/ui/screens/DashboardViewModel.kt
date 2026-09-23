@@ -10,6 +10,8 @@ import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
 import com.xiaoian.app.display.DisplayDetector
 import com.xiaoian.app.display.ExternalDisplay
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
 import com.xiaoian.app.service.XiaoianService
 import com.xiaoian.app.settings.AppPrefs
 import com.xiaoian.app.shell.RootShell
@@ -23,7 +25,7 @@ import kotlinx.coroutines.launch
 
 data class UninstallState(
     val inProgress: Boolean = false,
-    val de: String = "",       // "xfce" or "kde"
+    val de: Desktop? = null,
     val output: String = ""
 )
 
@@ -52,8 +54,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * What the last started session used, for the dashboard's radio buttons to
      * open on. See [AppPrefs.lastDe].
      */
-    val lastDe: String = AppPrefs.lastDe(application)
-    val lastMode: String = AppPrefs.lastMode(application)
+    val lastDe: Desktop = AppPrefs.lastDe(application)
+    val lastMode: DisplayMode = AppPrefs.lastMode(application)
 
     /** Evaluated once: nothing it looks at changes while the app runs. */
     val deviceReport = com.xiaoian.app.device.DeviceSupport.evaluate()
@@ -81,8 +83,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     companion object {
         private const val TAG = "DashboardViewModel"
-        private const val XFCE_INFRA = "/data/local/xiaoian-x11-xfce"
-        private const val KDE_INFRA = "/data/local/xiaoian-wayland-kde"
         /** The script pads names into columns ("etc             ... done"). */
         private val WHITESPACE = Regex("\\s+")
     }
@@ -92,15 +92,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * locked) -- the same test as the scripts' state_pid: the state file's
      * pid is still the session wrapper, and from this boot.
      */
-    private suspend fun findLiveSession(): Triple<String, String, Boolean>? {
-        for ((de, infra) in listOf("xfce" to XFCE_INFRA, "kde" to KDE_INFRA)) {
+    private suspend fun findLiveSession(): Triple<Desktop, DisplayMode, Boolean>? {
+        for (de in Desktop.values()) {
+            val infra = de.infraRoot
             val lines = mutableListOf<String>()
             val cmd = "(read -r p b < $infra/state 2>/dev/null || exit 1; " +
                 "[ -z \"\$b\" ] || [ \"\$b\" = \"\$(cat /proc/sys/kernel/random/boot_id)\" ] || exit 1; " +
                 "grep -qF $infra/session.sh /proc/\$p/cmdline 2>/dev/null || exit 1; " +
                 "cat $infra/mode 2>/dev/null; echo; [ -f $infra/locked ] && echo locked; exit 0)"
             if (!shellExecutor.run(cmd) { lines += it.trim() }.success) continue
-            val mode = lines.firstOrNull { it in listOf("extend", "mirror", "local") } ?: "local"
+            val mode = DisplayMode.fromId(lines.firstOrNull { it in listOf("extend", "mirror", "local") } ?: "local")
             return Triple(de, mode, "locked" in lines)
         }
         return null
@@ -117,8 +118,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 getApplication<Application>().startForegroundService(
                     Intent(getApplication(), XiaoianService::class.java).apply {
                         action = XiaoianService.ACTION_ADOPT
-                        putExtra("de", de)
-                        putExtra("mode", mode)
+                        putExtra("de", de.id)
+                        putExtra("mode", mode.id)
                         putExtra("locked", locked)
                     }
                 )
@@ -148,16 +149,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      *   pick the first one it finds. Ignored in local mode.
      */
     /** [password]: the first-start root password for the new chroot, or null. */
-    fun startSession(mode: String, de: String, display: ExternalDisplay? = null, password: String? = null) {
+    fun startSession(mode: DisplayMode, de: Desktop, display: ExternalDisplay? = null, password: String? = null) {
         // The only place a desktop starts from the dashboard, so the only place
         // that has to remember what it was started with.
         AppPrefs.setLastSelection(getApplication(), de, mode)
         val intent = Intent(getApplication(), XiaoianService::class.java).apply {
             action = XiaoianService.ACTION_START
-            putExtra("mode", mode)
-            putExtra("de", de)
+            putExtra("mode", mode.id)
+            putExtra("de", de.id)
             if (password != null) putExtra("password", password)
-            if (mode != "local" && display != null) {
+            if (mode != DisplayMode.LOCAL && display != null) {
                 putExtra("displayId", display.id)
                 putExtra("displaySize", display.size)
             }
@@ -171,13 +172,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * reboot-gated settings mirror needs) surfaces through [retargetError]
      * and leaves the session running exactly as it was.
      */
-    fun retarget(mode: String, display: ExternalDisplay? = null) {
+    fun retarget(mode: DisplayMode, display: ExternalDisplay? = null) {
         val running = sessionState.value as? SessionState.Running ?: return
         AppPrefs.setLastSelection(getApplication(), running.de, mode)
         val intent = Intent(getApplication(), XiaoianService::class.java).apply {
             action = XiaoianService.ACTION_RETARGET
-            putExtra("mode", mode)
-            if (mode != "local" && display != null) {
+            putExtra("mode", mode.id)
+            if (mode != DisplayMode.LOCAL && display != null) {
                 putExtra("displayId", display.id)
                 putExtra("displaySize", display.size)
             }
@@ -202,13 +203,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (_storageLoading.value) return
         viewModelScope.launch {
             _storageLoading.value = true
-            _xfceStorage.value = queryStorage(XFCE_INFRA)
-            _kdeStorage.value = queryStorage(KDE_INFRA)
+            _xfceStorage.value = queryStorage(Desktop.XFCE.infraRoot)
+            _kdeStorage.value = queryStorage(Desktop.KDE.infraRoot)
             _storageLoading.value = false
         }
     }
 
-    fun uninstall(de: String) {
+    fun uninstall(de: Desktop) {
         viewModelScope.launch {
             val scriptName = com.xiaoian.app.service.ScriptEnv.scriptName(de)
             val infraRoot = com.xiaoian.app.service.ScriptEnv.infraRoot(de)
@@ -244,7 +245,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             // Uninstall unmounts and then deletes a multi-gigabyte chroot: it
             // runs long and goes quiet, so it gets a root shell of its own
             // rather than holding the shared one the dashboard is polling.
-            val uninstallShell = RootShell.dedicated("uninstall-$de")
+            val uninstallShell = RootShell.dedicated("uninstall-${de.id}")
             val result = try {
                 ShellExecutor(uninstallShell).run(
                     "$env $scriptPath -u",
@@ -253,7 +254,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     // The script pads these for a terminal table ("      etc
                     // ... done"); trim so the card shows a clean line instead
                     // of leading/trailing whitespace around the path.
-                    Log.i(TAG, "uninstall-$de: $line")
+                    Log.i(TAG, "uninstall-${de.id}: $line")
                     _uninstallState.value = _uninstallState.value.copy(output = line.trim().replace(WHITESPACE, " "))
                 }
             } finally {
@@ -282,8 +283,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         return StorageInfo(sizeBytes = getDirSize(infraRoot), installed = true)
     }
 
-    private fun markInstalled(de: String) {
-        val flow = if (de == "kde") _kdeStorage else _xfceStorage
+    private fun markInstalled(de: Desktop) {
+        val flow = if (de == Desktop.KDE) _kdeStorage else _xfceStorage
         flow.value = (flow.value ?: StorageInfo()).copy(installed = true)
     }
 

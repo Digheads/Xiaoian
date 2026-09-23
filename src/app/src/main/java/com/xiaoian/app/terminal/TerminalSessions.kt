@@ -5,6 +5,7 @@ import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.terminal.XiaoianPty
+import com.xiaoian.app.model.Desktop
 import com.xiaoian.app.service.BootstrapManager
 import com.xiaoian.app.shell.RootShell
 import kotlinx.coroutines.CoroutineScope
@@ -155,7 +156,7 @@ object TerminalSessions {
         _sessions.value.filter { it.spec.group == group }.forEach { close(context, it) }
     }
 
-    suspend fun closeAllFor(context: Context, de: String) =
+    suspend fun closeAllFor(context: Context, de: Desktop) =
         closeGroup(context, SessionSpec.DesktopChroot(de).group)
 
     /**
@@ -168,7 +169,7 @@ object TerminalSessions {
      * A session whose view never laid out has no emulator, so nothing would
      * ever mark it finished; that one is closed outright.
      */
-    suspend fun endAllFor(context: Context, de: String) = withContext(Dispatchers.IO) {
+    suspend fun endAllFor(context: Context, de: Desktop) = withContext(Dispatchers.IO) {
         val group = SessionSpec.DesktopChroot(de).group
         _sessions.value.filter { it.spec.group == group && it.isRunning }.forEach { session ->
             if (session.terminal.emulator == null) close(context, session)

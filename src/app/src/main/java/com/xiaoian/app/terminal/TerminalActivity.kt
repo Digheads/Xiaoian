@@ -34,6 +34,7 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import com.xiaoian.app.R
 import com.xiaoian.app.SettingsActivity
+import com.xiaoian.app.model.Desktop
 import com.xiaoian.app.service.BootstrapManager
 import com.xiaoian.app.settings.AppPrefs
 import kotlinx.coroutines.CompletableDeferred
@@ -74,7 +75,7 @@ class TerminalActivity : ComponentActivity() {
          */
         fun intent(context: Context, spec: SessionSpec?): Intent =
             Intent(context, TerminalActivity::class.java).apply {
-                if (spec is SessionSpec.DesktopChroot) putExtra(EXTRA_DE, spec.de)
+                if (spec is SessionSpec.DesktopChroot) putExtra(EXTRA_DE, spec.de.id)
                 if (spec != null) putExtra(EXTRA_HAS_SPEC, true)
             }
 
@@ -82,8 +83,8 @@ class TerminalActivity : ComponentActivity() {
         private val CHOICES = listOf(
             SessionSpec.Local,
             SessionSpec.AndroidShell,
-            SessionSpec.DesktopChroot("xfce"),
-            SessionSpec.DesktopChroot("kde"),
+            SessionSpec.DesktopChroot(Desktop.XFCE),
+            SessionSpec.DesktopChroot(Desktop.KDE),
         )
     }
 
@@ -155,7 +156,7 @@ class TerminalActivity : ComponentActivity() {
     private fun applyIntent(intent: Intent) {
         val wanted = if (!intent.getBooleanExtra(EXTRA_HAS_SPEC, false)) null
         else intent.getStringExtra(EXTRA_DE)
-            ?.let { SessionSpec.DesktopChroot(it) }
+            ?.let { SessionSpec.DesktopChroot(Desktop.fromId(it)) }
             ?: SessionSpec.Local
 
         val open = TerminalSessions.sessions.value
@@ -223,7 +224,7 @@ class TerminalActivity : ComponentActivity() {
                 is SessionSpec.Local -> "Xiaoian \u2013 Debian, no desktop needed"
                 is SessionSpec.AndroidShell -> "Android \u2013 root shell"
                 is SessionSpec.DesktopChroot ->
-                    if (spec.de == "kde") "KDE \u2013 desktop chroot" else "XFCE \u2013 desktop chroot"
+                    if (spec.de == Desktop.KDE) "KDE \u2013 desktop chroot" else "XFCE \u2013 desktop chroot"
             }
         }.toTypedArray()
         AlertDialog.Builder(this)

@@ -21,6 +21,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.anland.termux.ExtraKeysBar
 import com.xiaoian.app.input.DesktopInput
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
 import com.xiaoian.app.input.InputCaptureView
 import com.xiaoian.app.input.TouchpadView
 import com.xiaoian.app.service.SessionManagerProvider
@@ -46,9 +48,9 @@ class TouchpadActivity : ComponentActivity() {
         /** Same row height as under the terminal. */
         private const val BAR_ROW_DP = 37.5f
 
-        fun start(context: Context, de: String) {
+        fun start(context: Context, de: Desktop) {
             val intent = Intent(context, TouchpadActivity::class.java)
-                .putExtra(EXTRA_DE, de)
+                .putExtra(EXTRA_DE, de.id)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             // The phone's screen, explicitly: with the desktop focused on the
             // external display, a plain start could land over there.
@@ -68,7 +70,7 @@ class TouchpadActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val de = intent.getStringExtra(EXTRA_DE) ?: run { finish(); return }
+        val de = intent.getStringExtra(EXTRA_DE)?.let(Desktop::fromId) ?: run { finish(); return }
         input = DesktopInput(de)
         if (!input.available()) {
             Toast.makeText(this, "Open the desktop first", Toast.LENGTH_SHORT).show()
@@ -137,7 +139,7 @@ class TouchpadActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             SessionManagerProvider.sessionManager.state.collect { state ->
-                val ok = state is SessionState.Running && state.mode == "extend" &&
+                val ok = state is SessionState.Running && state.mode == DisplayMode.EXTEND &&
                     !state.isLocked && state.de == de
                 if (!ok) finish()
             }

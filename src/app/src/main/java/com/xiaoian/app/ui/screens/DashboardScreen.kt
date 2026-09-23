@@ -18,6 +18,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaoian.app.display.ExternalDisplay
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
 import com.xiaoian.app.service.SessionState
 import com.xiaoian.app.service.SetupProgress
 import com.xiaoian.app.service.StorageInfo
@@ -64,13 +66,13 @@ fun DashboardScreen(
     // offered greyed out rather than accepted and then rejected.
     val hasExternalDisplay = externalDisplays.isNotEmpty()
     LaunchedEffect(hasExternalDisplay) {
-        if (!hasExternalDisplay && selectedMode != "local") selectedMode = "local"
+        if (!hasExternalDisplay && selectedMode != DisplayMode.LOCAL) selectedMode = DisplayMode.LOCAL
     }
-    var showUninstallDialog by remember { mutableStateOf<String?>(null) }
-    var askPasswordFor by remember { mutableStateOf<String?>(null) }
+    var showUninstallDialog by remember { mutableStateOf<Desktop?>(null) }
+    var askPasswordFor by remember { mutableStateOf<Desktop?>(null) }
     askPasswordFor?.let { de ->
         RootPasswordDialog(
-            deName = if (de == "kde") "KDE" else "XFCE",
+            deName = de.label,
             onCancel = { askPasswordFor = null },
             onConfirm = { password ->
                 askPasswordFor = null
@@ -124,10 +126,10 @@ fun DashboardScreen(
             // DE Selection
             Text("Desktop Environment", style = MaterialTheme.typography.titleMedium)
             Row(modifier = Modifier.padding(vertical = 8.dp)) {
-                RadioButton(selected = selectedDE == "kde", onClick = { selectedDE = "kde" })
+                RadioButton(selected = selectedDE == Desktop.KDE, onClick = { selectedDE = Desktop.KDE })
                 Text("KDE (Wayland)", modifier = Modifier.align(Alignment.CenterVertically))
                 Spacer(modifier = Modifier.width(16.dp))
-                RadioButton(selected = selectedDE == "xfce", onClick = { selectedDE = "xfce" })
+                RadioButton(selected = selectedDE == Desktop.XFCE, onClick = { selectedDE = Desktop.XFCE })
                 Text("XFCE (X11)", modifier = Modifier.align(Alignment.CenterVertically))
             }
             
@@ -139,11 +141,11 @@ fun DashboardScreen(
                 modifier = Modifier.padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ModeOption("Extend", "extend", selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
+                ModeOption("Extend", DisplayMode.EXTEND, selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
-                ModeOption("Mirror", "mirror", selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
+                ModeOption("Mirror", DisplayMode.MIRROR, selectedMode, hasExternalDisplay, NO_DISPLAY) { selectedMode = it }
                 Spacer(modifier = Modifier.width(8.dp))
-                ModeOption("Local", "local", selectedMode, true) { selectedMode = it }
+                ModeOption("Local", DisplayMode.LOCAL, selectedMode, true) { selectedMode = it }
             }
             if (!hasExternalDisplay) {
                 Text(
@@ -156,7 +158,7 @@ fun DashboardScreen(
             // Only worth asking when there is something to choose between.
             // With one screen the scripts find it themselves, and in local
             // mode the desktop never leaves the phone.
-            if (selectedMode != "local" && externalDisplays.size > 1) {
+            if (selectedMode != DisplayMode.LOCAL && externalDisplays.size > 1) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("External Display", style = MaterialTheme.typography.titleMedium)
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -183,7 +185,7 @@ fun DashboardScreen(
             Button(
                 onClick = {
                     // First start of this desktop: ask for its root password.
-                    val info = if (selectedDE == "kde") kdeStorage else xfceStorage
+                    val info = if (selectedDE == Desktop.KDE) kdeStorage else xfceStorage
                     if (info?.installed == true) viewModel.startSession(selectedMode, selectedDE, selectedDisplay)
                     else askPasswordFor = selectedDE
                 },
@@ -249,7 +251,7 @@ fun DashboardScreen(
                     CircularProgressIndicator(modifier = Modifier.size(32.dp))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Removing: ${if (uninstallState.de == "kde") "KDE (Wayland)" else "XFCE (X11)"}",
+                        "Removing: ${uninstallState.de?.displayName ?: ""}",
                         style = MaterialTheme.typography.titleSmall
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -268,7 +270,7 @@ fun DashboardScreen(
         } else if (uninstallState.output.startsWith("Error")) {
             // A refused delete used to vanish with the progress card.
             Text(
-                "Could not remove ${if (uninstallState.de == "kde") "KDE (Wayland)" else "XFCE (X11)"}: " +
+                "Could not remove ${uninstallState.de?.displayName ?: ""}: " +
                     uninstallState.output.removePrefix("Error: "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
@@ -281,8 +283,8 @@ fun DashboardScreen(
         // Each desktop has its own Android frontend. One shared lambda used to
         // send both cards to the X11 window, so the KDE card opened an empty
         // Termux:X11 surface instead of the Wayland one.
-        val openDesktop = { deId: String ->
-            val target = if (deId == "kde")
+        val openDesktop = { de: Desktop ->
+            val target = if (de == Desktop.KDE)
                 com.anland.termux.MainActivity::class.java
             else
                 com.termux.x11.MainActivity::class.java
@@ -294,7 +296,7 @@ fun DashboardScreen(
         // XFCE Card
         InstalledEnvironmentCard(
             name = "XFCE (X11)",
-            deId = "xfce",
+            de = Desktop.XFCE,
             info = xfceStorage,
             loading = storageLoading,
             sessionState = state,
@@ -304,8 +306,8 @@ fun DashboardScreen(
             externalDisplays = externalDisplays,
             retargeting = retargeting,
             retargetError = retargetError,
-            onUninstall = { showUninstallDialog = "xfce" },
-            onOpenDesktop = { openDesktop("xfce") },
+            onUninstall = { showUninstallDialog = Desktop.XFCE },
+            onOpenDesktop = { openDesktop(Desktop.XFCE) },
             onLockPhone = {
                 context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
             },
@@ -318,7 +320,7 @@ fun DashboardScreen(
         // KDE Card
         InstalledEnvironmentCard(
             name = "KDE (Wayland)",
-            deId = "kde",
+            de = Desktop.KDE,
             info = kdeStorage,
             loading = storageLoading,
             sessionState = state,
@@ -328,8 +330,8 @@ fun DashboardScreen(
             externalDisplays = externalDisplays,
             retargeting = retargeting,
             retargetError = retargetError,
-            onUninstall = { showUninstallDialog = "kde" },
-            onOpenDesktop = { openDesktop("kde") },
+            onUninstall = { showUninstallDialog = Desktop.KDE },
+            onOpenDesktop = { openDesktop(Desktop.KDE) },
             onLockPhone = {
                 context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
             },
@@ -340,7 +342,7 @@ fun DashboardScreen(
 
     // Uninstall Confirmation Dialog
     showUninstallDialog?.let { de ->
-        val envName = if (de == "kde") "KDE (Wayland)" else "XFCE (X11)"
+        val envName = de.displayName
         AlertDialog(
             onDismissRequest = { showUninstallDialog = null },
             title = { Text("Uninstall Environment") },
@@ -372,11 +374,11 @@ fun DashboardScreen(
 @Composable
 fun InstalledEnvironmentCard(
     name: String,
-    deId: String,
+    de: Desktop,
     info: StorageInfo?,
     loading: Boolean,
     sessionState: SessionState,
-    selectedDE: String,
+    selectedDE: Desktop,
     setupProgress: SetupProgress,
     uninstallInProgress: Boolean,
     externalDisplays: List<ExternalDisplay>,
@@ -386,7 +388,7 @@ fun InstalledEnvironmentCard(
     onOpenDesktop: () -> Unit,
     onLockPhone: () -> Unit,
     onStopSession: () -> Unit,
-    onRetarget: (String, ExternalDisplay?) -> Unit,
+    onRetarget: (DisplayMode, ExternalDisplay?) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -444,10 +446,10 @@ fun InstalledEnvironmentCard(
             
             // Check if this card represents the active/starting/stopping session
             val isActiveDE = when (sessionState) {
-                is SessionState.Starting -> selectedDE == deId
-                is SessionState.Running -> sessionState.de == deId
-                is SessionState.Stopping -> selectedDE == deId
-                is SessionState.Error -> selectedDE == deId
+                is SessionState.Starting -> selectedDE == de
+                is SessionState.Running -> sessionState.de == de
+                is SessionState.Stopping -> selectedDE == de
+                is SessionState.Error -> selectedDE == de
                 else -> false
             }
 
@@ -470,7 +472,7 @@ fun InstalledEnvironmentCard(
                             Text("Status: ", fontWeight = FontWeight.Bold)
                             Text("RUNNING", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                         }
-                        Text("Display mode: ${sessionState.mode}")
+                        Text("Display mode: ${sessionState.mode.id}")
 
                         Spacer(modifier = Modifier.height(12.dp))
 
@@ -491,20 +493,20 @@ fun InstalledEnvironmentCard(
                         val configured = remember(sessionState.mode) {
                             com.xiaoian.app.device.DeviceSupport.configuredDisplayMode(context)
                         }
-                        fun reasonFor(mode: String): String? = when {
+                        fun reasonFor(mode: DisplayMode): String? = when {
                             !hasDisplay -> NO_DISPLAY
-                            mode != configured -> "Switching to $mode needs a reboot: restart the desktop in $mode mode."
+                            mode != configured -> "Switching to ${mode.id} needs a reboot: restart the desktop in ${mode.id} mode."
                             else -> null
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            ModeOption("Extend", "extend", retargetMode, reasonFor("extend") == null, reasonFor("extend")) { retargetMode = it }
+                            ModeOption("Extend", DisplayMode.EXTEND, retargetMode, reasonFor(DisplayMode.EXTEND) == null, reasonFor(DisplayMode.EXTEND)) { retargetMode = it }
                             Spacer(modifier = Modifier.width(8.dp))
-                            ModeOption("Mirror", "mirror", retargetMode, reasonFor("mirror") == null, reasonFor("mirror")) { retargetMode = it }
+                            ModeOption("Mirror", DisplayMode.MIRROR, retargetMode, reasonFor(DisplayMode.MIRROR) == null, reasonFor(DisplayMode.MIRROR)) { retargetMode = it }
                             Spacer(modifier = Modifier.width(8.dp))
-                            ModeOption("Local", "local", retargetMode, true) { retargetMode = it }
+                            ModeOption("Local", DisplayMode.LOCAL, retargetMode, true) { retargetMode = it }
                         }
-                        if (retargetMode != "local" && externalDisplays.size > 1) {
+                        if (retargetMode != DisplayMode.LOCAL && externalDisplays.size > 1) {
                             Column {
                                 externalDisplays.forEach { display ->
                                     Row(
@@ -540,7 +542,7 @@ fun InstalledEnvironmentCard(
                                 enabled = retargetMode != sessionState.mode,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("SWITCH TO ${retargetMode.uppercase()}")
+                                Text("SWITCH TO ${retargetMode.id.uppercase()}")
                             }
                         }
                         retargetError?.let {
@@ -561,11 +563,11 @@ fun InstalledEnvironmentCard(
 
                         // The phone as touchpad and keyboard: only in extend,
                         // where the desktop is not on the phone's own screen.
-                        if (sessionState.mode == "extend") {
+                        if (sessionState.mode == DisplayMode.EXTEND) {
                             val context = androidx.compose.ui.platform.LocalContext.current
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(
-                                onClick = { com.xiaoian.app.TouchpadActivity.start(context, deId) },
+                                onClick = { com.xiaoian.app.TouchpadActivity.start(context, de) },
                                 enabled = !sessionState.isLocked,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -578,7 +580,7 @@ fun InstalledEnvironmentCard(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             // Locking the phone only means anything while the
                             // desktop lives on another display.
-                            if (sessionState.mode != "local") {
+                            if (sessionState.mode != DisplayMode.LOCAL) {
                                 OutlinedButton(onClick = onLockPhone, modifier = Modifier.weight(1f)) {
                                     Text("LOCK")
                                 }
@@ -624,11 +626,11 @@ fun InstalledEnvironmentCard(
 @Composable
 private fun ModeOption(
     label: String,
-    value: String,
-    selected: String,
+    value: DisplayMode,
+    selected: DisplayMode,
     enabled: Boolean,
     disabledReason: String? = null,
-    onSelect: (String) -> Unit,
+    onSelect: (DisplayMode) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     // The Row takes the tap, not the RadioButton: a disabled button swallows

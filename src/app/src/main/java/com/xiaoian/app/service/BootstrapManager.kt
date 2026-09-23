@@ -35,9 +35,14 @@ class BootstrapManager(private val context: Context) {
         get() = File(File(context.filesDir, "downloads"), TARBALL_NAME)
 
     fun isInstalled(): Boolean {
-        // Files are root-owned, so Java File.exists() can't see them – use su
-        val output = runSuCommandWithOutput("test -f ${prefixDir.absolutePath}/bin/bash && test -f ${prefixDir.absolutePath}/usr/bin/apt-get && echo OK")
-        val installed = output.contains("OK")
+        // Files are root-owned, so Java File.exists() can't see them – use su.
+        // A unique marker rather than a substring match: stderr is merged into
+        // the output, so `contains("OK")` could read a stray "OK" as success.
+        val marker = "XIAOIAN_ROOTFS_READY"
+        val output = runSuCommandWithOutput(
+            "test -f ${prefixDir.absolutePath}/bin/bash && test -f ${prefixDir.absolutePath}/usr/bin/apt-get && echo $marker"
+        )
+        val installed = output.lineSequence().any { it.trim() == marker }
         Log.d(TAG, "isInstalled check: $installed (output='$output'), prefixDir=${prefixDir.absolutePath}")
         return installed
     }

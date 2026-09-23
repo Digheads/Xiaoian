@@ -27,8 +27,8 @@ class ScriptOutputParser {
         val trimmed = line.trim()
         return parseProtocol(trimmed) ?: when {
             trimmed.startsWith("[*]") -> ScriptMessage.Info(trimmed.removePrefix("[*]").trim())
-            trimmed.startsWith("[!] ERROR") -> ScriptMessage.Error(trimmed.removePrefix("[!] ERROR:").trim())
-            trimmed.startsWith("[!] WARNING") -> ScriptMessage.Warning(trimmed.removePrefix("[!] WARNING:").trim())
+            trimmed.startsWith("[!] ERROR") -> ScriptMessage.Error(trimmed.removePrefix("[!] ERROR").trimStart(':', ' ').trim())
+            trimmed.startsWith("[!] WARNING") -> ScriptMessage.Warning(trimmed.removePrefix("[!] WARNING").trimStart(':', ' ').trim())
             trimmed.startsWith("[!]") -> ScriptMessage.Warning(trimmed.removePrefix("[!]").trim())
             else -> ScriptMessage.Info(trimmed)
         }

@@ -1,6 +1,8 @@
 package com.xiaoian.app.settings
 
 import android.content.Context
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
 
 /**
  * The preferences the app itself owns -- the terminal's settings and what the
@@ -41,12 +43,6 @@ object AppPrefs {
     const val TEXT_SIZE_MIN = 8
     const val TEXT_SIZE_MAX = 36
     const val TEXT_SIZE_DEFAULT = 14
-
-    const val DEFAULT_DE = "kde"
-    const val DEFAULT_MODE = "extend"
-
-    private val DESKTOPS = setOf("kde", "xfce")
-    private val DISPLAY_MODES = setOf("extend", "mirror", "local")
 
     private fun ours(context: Context) =
         context.getSharedPreferences(XIAOIAN_PREFS, Context.MODE_PRIVATE)
@@ -101,18 +97,16 @@ object AppPrefs {
      * version knows. An unrecognised string would otherwise leave the radio
      * group with nothing selected at all.
      */
-    fun lastDe(context: Context): String =
-        ours(context).getString(KEY_LAST_DE, DEFAULT_DE)
-            ?.takeIf { it in DESKTOPS } ?: DEFAULT_DE
+    fun lastDe(context: Context): Desktop =
+        Desktop.fromId(ours(context).getString(KEY_LAST_DE, Desktop.DEFAULT.id))
 
-    fun lastMode(context: Context): String =
-        ours(context).getString(KEY_LAST_MODE, DEFAULT_MODE)
-            ?.takeIf { it in DISPLAY_MODES } ?: DEFAULT_MODE
+    fun lastMode(context: Context): DisplayMode =
+        DisplayMode.fromId(ours(context).getString(KEY_LAST_MODE, DisplayMode.DEFAULT.id))
 
-    fun setLastSelection(context: Context, de: String, mode: String) {
+    fun setLastSelection(context: Context, de: Desktop, mode: DisplayMode) {
         ours(context).edit()
-            .putString(KEY_LAST_DE, de)
-            .putString(KEY_LAST_MODE, mode)
+            .putString(KEY_LAST_DE, de.id)
+            .putString(KEY_LAST_MODE, mode.id)
             .apply()
     }
 

@@ -1,6 +1,7 @@
 package com.xiaoian.app.terminal
 
 import android.content.Context
+import com.xiaoian.app.model.Desktop
 import com.xiaoian.app.service.BootstrapManager
 import com.xiaoian.app.service.ScriptEnv
 
@@ -410,10 +411,10 @@ object SessionScripts {
      * so the script's `do_uninstall` would not unmount it before its `rm -rf` --
      * and that `rm -rf` would then walk into the host filesystem.
      */
-    private fun desktopChroot(de: String): String {
+    private fun desktopChroot(de: Desktop): String {
         val infra = ScriptEnv.infraRoot(de)
-        val name = de.uppercase()
-        val liveEnv = if (de == "kde") {
+        val name = de.label
+        val liveEnv = if (de == Desktop.KDE) {
             // The compositor picks its own socket number; startplasma-anland.sh
             // exports WAYLAND_DISPLAY inside the session and nothing writes it
             // down, so read it back off the runtime dir.

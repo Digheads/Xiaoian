@@ -1,28 +1,19 @@
 package com.xiaoian.app.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
-import com.xiaoian.app.MainActivity
-import com.xiaoian.app.R
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
+import com.xiaoian.app.shell.RootShell
 import com.xiaoian.app.shell.ScriptMessage
+import com.xiaoian.app.shell.ScriptOutputParser
+import com.xiaoian.app.shell.ShellExecutor
 import com.xiaoian.app.terminal.SessionSpec
 import com.xiaoian.app.terminal.TerminalActivity
 import com.xiaoian.app.terminal.TerminalSessions
-import com.xiaoian.app.shell.RootShell
-import com.xiaoian.app.shell.ScriptOutputParser
-import com.xiaoian.app.shell.ShellExecutor
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -48,24 +39,27 @@ class XiaoianService : LifecycleService() {
     private val setupTracker = SetupProgressTracker()
     @Volatile private var lastProgressNotification = 0L
 
+    private val notifications = SessionNotificationController(this)
+    private val frontends = FrontendController(this)
+    private val watchdog = SessionWatchdog(lifecycleScope, shellExecutor)
+
     private var audioPlayer: AudioPlayer? = null
     private var audioPlayerJob: kotlinx.coroutines.Job? = null
 
-    private var currentMode: String = "extend"
-    private var currentDE: String = "kde"
-    private var watchdogJob: Job? = null
+    private var currentMode: DisplayMode = DisplayMode.DEFAULT
+    private var currentDE: Desktop = Desktop.DEFAULT
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        notifications.createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_START -> startSession(
-                mode = intent.getStringExtra("mode") ?: "extend",
-                de = intent.getStringExtra("de") ?: "kde",
+                mode = DisplayMode.fromId(intent.getStringExtra("mode")),
+                de = Desktop.fromId(intent.getStringExtra("de")),
                 // -1 means "not chosen": one display, local mode, or a caller
                 // that does not know about the picker.
                 displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
@@ -77,12 +71,12 @@ class XiaoianService : LifecycleService() {
             ACTION_UNLOCK -> unlockPhone()
             ACTION_TERMINAL -> openTerminal()
             ACTION_ADOPT -> adoptSession(
-                mode = intent.getStringExtra("mode") ?: "local",
-                de = intent.getStringExtra("de") ?: return START_STICKY,
+                mode = intent.getStringExtra("mode")?.let(DisplayMode::fromId) ?: DisplayMode.LOCAL,
+                de = intent.getStringExtra("de")?.let(Desktop::fromId) ?: return START_STICKY,
                 locked = intent.getBooleanExtra("locked", false),
             )
             ACTION_RETARGET -> retargetSession(
-                mode = intent.getStringExtra("mode") ?: return START_STICKY,
+                mode = intent.getStringExtra("mode")?.let(DisplayMode::fromId) ?: return START_STICKY,
                 displayId = intent.getIntExtra("displayId", -1).takeIf { it >= 0 },
                 displaySize = intent.getStringExtra("displaySize"),
             )
@@ -91,16 +85,21 @@ class XiaoianService : LifecycleService() {
     }
 
     private fun startSession(
-        mode: String,
-        de: String,
+        mode: DisplayMode,
+        de: Desktop,
         displayId: Int? = null,
         displaySize: String? = null,
         password: String? = null,
     ) {
+        // Not re-entrant: two rapid START intents would otherwise run two
+        // installs against the same setupTracker and two session shells. The
+        // dashboard disables START while busy, but the service cannot trust it.
+        val state = sessionManager.state.value
+        if (state !is SessionState.Idle && state !is SessionState.Error) return
         currentMode = mode
         currentDE = de
         sessionManager.updateState(SessionState.Starting)
-        startForeground(NOTIFICATION_ID, buildNotification("Starting session..."))
+        startForeground(NOTIFICATION_ID, notifications.build(currentDE, currentMode, sessionManager.state.value, "Starting session...", null))
 
         lifecycleScope.launch {
             try {
@@ -186,14 +185,14 @@ class XiaoianService : LifecycleService() {
                 // First start only (the dashboard asks): chpasswd input,
                 // owner-only in filesDir, for the script to consume and delete.
                 val passwordFile = password?.let {
-                    File(filesDir, "root-password-$de").apply {
+                    File(filesDir, "root-password-${de.id}").apply {
                         writeText("root:$it\n")
                         setReadable(false, false); setReadable(true, true)
                     }
                 }
                 val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize, passwordFile)
-                val command = "$env $scriptPath -s --$mode"
-                val sessionShell = RootShell.dedicated("session-$de")
+                val command = "$env $scriptPath -s --${mode.id}"
+                val sessionShell = RootShell.dedicated("session-${de.id}")
                 val result = try {
                     ShellExecutor(sessionShell).run(
                         command = command,
@@ -230,16 +229,34 @@ class XiaoianService : LifecycleService() {
         }
     }
 
-    /** Creates `files/downloads` under this app's uid before root touches it. */
     /** Sound and the watchdog: everything a running session needs from the app. */
-    private fun attachToSession(de: String) {
-        if (de != "kde") {
+    private fun attachToSession(de: Desktop) {
+        if (de != Desktop.KDE) {
             audioPlayer = AudioPlayer()
             audioPlayerJob = lifecycleScope.launch {
                 audioPlayer?.start()
             }
         }
-        startSessionWatchdog()
+        watchdog.start(
+            de = de,
+            onLockChanged = { locked -> setLocked(locked) },
+            onDied = {
+                // The sound server died with the session; the reader would
+                // otherwise keep retrying a socket nobody listens on.
+                audioPlayerJob?.cancel()
+                audioPlayer?.stop()
+                audioPlayer = null
+                frontends.close()
+                // The desktop's own teardown normally killed its chroot
+                // terminals already; this catches any it missed. Either way
+                // their tabs stay, struck through, so a logout or crash does
+                // not take their output with it.
+                TerminalSessions.endAllFor(this@XiaoianService, currentDE)
+                sessionManager.updateState(SessionState.Idle)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            },
+        )
     }
 
     /**
@@ -248,17 +265,18 @@ class XiaoianService : LifecycleService() {
      * Idle: no stop button, no watchdog, and delete refused by the script.
      * The dashboard finds it (see DashboardViewModel) and hands it over here.
      */
-    private fun adoptSession(mode: String, de: String, locked: Boolean) {
+    private fun adoptSession(mode: DisplayMode, de: Desktop, locked: Boolean) {
         if (sessionManager.state.value is SessionState.Idle) {
             currentMode = mode
             currentDE = de
             sessionManager.updateState(SessionState.Running(mode, de, locked))
         }
         // Started with startForegroundService: this is owed either way.
-        startForeground(NOTIFICATION_ID, buildNotification("Session running"))
-        if (watchdogJob?.isActive != true) attachToSession(de)
+        startForeground(NOTIFICATION_ID, notifications.build(currentDE, currentMode, sessionManager.state.value, "Session running", null))
+        if (!watchdog.isActive) attachToSession(de)
     }
 
+    /** Creates `files/downloads` under this app's uid before root touches it. */
     private fun bootstrapManagerDownloadsDir() {
         runCatching { BootstrapManager(this).rootfsTarball.parentFile?.mkdirs() }
             .onFailure { Log.w(TAG, "Could not create the downloads directory", it) }
@@ -285,6 +303,8 @@ class XiaoianService : LifecycleService() {
     }
 
     private fun stopSession() {
+        val state = sessionManager.state.value
+        if (state is SessionState.Idle || state is SessionState.Stopping) return
         sessionManager.updateState(SessionState.Stopping)
         updateNotification("Stopping session...")
         lifecycleScope.launch {
@@ -300,7 +320,7 @@ class XiaoianService : LifecycleService() {
             val scriptPath = ScriptEnv.scriptPath(currentDE)
             // Teardown kills chroot processes and unmounts; it can sit quiet
             // for a while, so it gets its own shell and no idle timeout.
-            val stopShell = RootShell.dedicated("stop-$currentDE")
+            val stopShell = RootShell.dedicated("stop-${currentDE.id}")
             try {
                 ShellExecutor(stopShell).run(
                     "${ScriptEnv.prefix(this@XiaoianService)} $scriptPath -t",
@@ -310,7 +330,7 @@ class XiaoianService : LifecycleService() {
                 stopShell.close()
             }
 
-            closeFrontend()
+            frontends.close()
 
             sessionManager.updateState(SessionState.Idle)
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -333,7 +353,7 @@ class XiaoianService : LifecycleService() {
      *     already on, and closing it afterwards closed the new one too.
      *  3. `--relaunch`: a fresh `am start` on the display the mode calls for.
      */
-    private fun retargetSession(mode: String, displayId: Int? = null, displaySize: String? = null) {
+    private fun retargetSession(mode: DisplayMode, displayId: Int? = null, displaySize: String? = null) {
         val running = sessionManager.state.value as? SessionState.Running ?: return
         if (mode == currentMode) return
 
@@ -343,7 +363,7 @@ class XiaoianService : LifecycleService() {
             try {
                 val scriptPath = ScriptEnv.scriptPath(currentDE)
                 val env = ScriptEnv.prefix(this@XiaoianService, displayId, displaySize)
-                val result = shellExecutor.run("$env $scriptPath -r --$mode")
+                val result = shellExecutor.run("$env $scriptPath -r --${mode.id}")
                 if (!result.success) {
                     sessionManager.updateRetargetError(cleanScriptError(result.error, "Could not switch mode"))
                     return@launch
@@ -352,8 +372,8 @@ class XiaoianService : LifecycleService() {
                 sessionManager.updateState(SessionState.Running(mode, currentDE, running.isLocked))
                 updateNotification("Session running")
 
-                closeFrontend()
-                waitForFrontendClosed()
+                frontends.close()
+                frontends.waitForClosed()
 
                 val relaunch = shellExecutor.run("$env $scriptPath --relaunch")
                 if (!relaunch.success) {
@@ -365,23 +385,6 @@ class XiaoianService : LifecycleService() {
             } finally {
                 sessionManager.updateRetargeting(false)
             }
-        }
-    }
-
-    /**
-     * Waits until neither frontend has a task left. The task, not the
-     * activity, is what matters: `am start` reuses a singleInstance task for
-     * as long as it exists, wherever it is.
-     */
-    private suspend fun waitForFrontendClosed() {
-        val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-        val frontends = setOf("com.termux.x11.MainActivity", "com.anland.termux.MainActivity")
-        fun open() = runCatching {
-            am.appTasks.any { it.taskInfo.baseActivity?.className in frontends }
-        }.getOrDefault(false)
-        val deadline = SystemClock.elapsedRealtime() + 3_000
-        while (open() && SystemClock.elapsedRealtime() < deadline) {
-            kotlinx.coroutines.delay(100)
         }
     }
 
@@ -431,152 +434,7 @@ class XiaoianService : LifecycleService() {
         startActivity(intent)
     }
 
-    /**
-     * Closes whichever desktop frontend is on screen.
-     *
-     * Called for every way a session can end -- the Stop button, a logout from
-     * inside the desktop, a crash -- because otherwise a dead surface stays on
-     * the external display with no way to dismiss it.
-     *
-     * Termux:X11 is closed through its own ACTION_STOP broadcast (which
-     * `LorieApp` turns into `finishAndRemoveTask`); Anland has no such
-     * receiver, so its activity is finished directly through the static
-     * reference it keeps.
-     */
-    private fun closeFrontend() {
-        runCatching {
-            sendBroadcast(Intent("com.termux.x11.ACTION_STOP").apply {
-                setPackage(packageName)
-            })
-        }.onFailure { Log.w(TAG, "Could not stop the X11 frontend", it) }
-
-        runCatching {
-            com.anland.termux.MainActivity.sInstance?.let { activity ->
-                activity.runOnUiThread { activity.finishAndRemoveTask() }
-            }
-        }.onFailure { Log.w(TAG, "Could not close the Anland frontend", it) }
-    }
-
-    private fun startSessionWatchdog() {
-        watchdogJob?.cancel()
-        watchdogJob = lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val stateFile = "${ScriptEnv.infraRoot(currentDE)}/state"
-            // One cheap check every five seconds on the shared root shell. This
-            // used to be a `while true` loop inside a root shell of its own --
-            // a whole extra Magisk prompt just to watch a file.
-            val lockFile = "${ScriptEnv.infraRoot(currentDE)}/locked"
-            // Also reports the lock, which the script's watcher lifts on its own.
-            // A subshell: this runs in the shared root shell, where a bare
-            // `exit` would end the shell itself.
-            val alive = "(p=\$(awk '{print \$1}' $stateFile 2>/dev/null); " +
-                "[ -n \"\$p\" ] && [ -d \"/proc/\$p\" ] || exit 1; " +
-                "[ -f $lockFile ] && echo locked || echo unlocked)"
-            try {
-                while (isActive) {
-                    kotlinx.coroutines.delay(5_000)
-                    var lockState: String? = null
-                    if (!shellExecutor.run(alive) { lockState = it.trim() }.success) break
-                    val locked = lockState == "locked"
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { setLocked(locked) }
-                }
-                
-                // Once the process exits, it means the session is dead
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    // The sound server died with the session; the reader would
-                    // otherwise keep retrying a socket nobody listens on.
-                    audioPlayerJob?.cancel()
-                    audioPlayer?.stop()
-                    audioPlayer = null
-                    closeFrontend()
-                    // The desktop's own teardown normally killed its chroot
-                    // terminals already; this catches any it missed. Either
-                    // way their tabs stay, struck through, so a logout or crash
-                    // does not take their output with it.
-                    TerminalSessions.endAllFor(this@XiaoianService, currentDE)
-                    sessionManager.updateState(SessionState.Idle)
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = getString(R.string.notification_channel_name)
-            val descriptionText = getString(R.string.notification_channel_desc)
-            val importance = NotificationManager.IMPORTANCE_LOW
-            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
-                description = descriptionText
-            }
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(channel)
-        }
-    }
-
-    private fun buildNotification(text: String, setup: SetupProgress? = null): Notification {
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Xiaoian — $currentDE ($currentMode)")
-            .setContentText(text)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-
-        if (setup != null) {
-            val fraction = setup.fraction
-            builder.setProgress(100, ((fraction ?: 0f) * 100).toInt(), fraction == null)
-        }
-
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-        builder.setContentIntent(pendingIntent)
-
-        val stopIntent = Intent(this, XiaoianService::class.java).apply { action = ACTION_STOP }
-        val stopPending = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-        builder.addAction(0, "Stop", stopPending)
-
-        if (sessionManager.state.value is SessionState.Running && currentMode != "local") {
-            val isLocked = (sessionManager.state.value as SessionState.Running).isLocked
-            // Locking asks first (LockConfirmActivity); only that dialog
-            // sends ACTION_LOCK.
-            val lockPending = if (isLocked) {
-                PendingIntent.getService(
-                    this, 2,
-                    Intent(this, XiaoianService::class.java).apply { action = ACTION_UNLOCK },
-                    PendingIntent.FLAG_IMMUTABLE,
-                )
-            } else {
-                PendingIntent.getActivity(
-                    this, 2,
-                    Intent(this, com.xiaoian.app.LockConfirmActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    PendingIntent.FLAG_IMMUTABLE,
-                )
-            }
-            builder.addAction(0, if (isLocked) "Unlock" else "Lock", lockPending)
-        }
-        
-        // Each frontend has its own settings screen. This was hard-coded to
-        // the X11 one, so a KDE session opened Termux:X11's preferences.
-        val prefsActivity = if (currentDE == "kde")
-            "com.anland.termux.SettingsActivity"
-        else
-            "com.termux.x11.LoriePreferences"
-        val prefsIntent = Intent().apply {
-            setClassName(this@XiaoianService, prefsActivity)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        val prefsPending = PendingIntent.getActivity(this, 3, prefsIntent, PendingIntent.FLAG_IMMUTABLE)
-        builder.addAction(0, "Preferences", prefsPending)
-
-        return builder.build()
-    }
-
     private fun updateNotification(text: String, setup: SetupProgress? = null) {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ID, buildNotification(text, setup))
+        notifications.show(currentDE, currentMode, sessionManager.state.value, text, setup)
     }
 }

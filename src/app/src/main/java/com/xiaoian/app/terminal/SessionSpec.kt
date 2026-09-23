@@ -1,5 +1,7 @@
 package com.xiaoian.app.terminal
 
+import com.xiaoian.app.model.Desktop
+
 /** What a terminal session is attached to. */
 sealed interface SessionSpec {
 
@@ -38,8 +40,8 @@ sealed interface SessionSpec {
      * `unmount_all()` tears down exactly that list, so a terminal that added
      * a mount of its own would make the desktop fail to stop.
      */
-    data class DesktopChroot(val de: String) : SessionSpec {
-        override val label = de.uppercase()
-        override val group = "de:$de"
+    data class DesktopChroot(val de: Desktop) : SessionSpec {
+        override val label = de.label
+        override val group = "de:${de.id}"
     }
 }

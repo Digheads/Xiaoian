@@ -3,6 +3,7 @@ package com.xiaoian.app.input
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import com.anland.termux.ExtraKeysBar
+import com.xiaoian.app.model.Desktop
 
 /**
  * Input for the running desktop, whichever frontend it has: both expose the
@@ -13,7 +14,9 @@ import com.anland.termux.ExtraKeysBar
  * same bar, and the same layout setting, as under the terminal. The bar
  * speaks evdev; the X11 side wants Android key codes, see [Evdev].
  */
-class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
+class DesktopInput(de: Desktop) : ExtraKeysBar.Sender {
+
+    private val input: FrontendInput = FrontendInput.forDesktop(de)
 
     /** The bar, once built: its modifiers apply to soft-keyboard input too. */
     var bar: ExtraKeysBar? = null
@@ -21,41 +24,23 @@ class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
     var onToggleKeyboard: () -> Unit = {}
     var onOpenSettings: () -> Unit = {}
 
-    private val kde get() = de == "kde"
+    fun available(): Boolean = input.available()
 
-    fun available(): Boolean =
-        if (kde) com.anland.termux.XiaoianInput.available() else com.termux.x11.XiaoianInput.available()
+    fun move(dx: Float, dy: Float) = input.move(dx, dy)
 
-    fun move(dx: Float, dy: Float) =
-        if (kde) com.anland.termux.XiaoianInput.move(dx, dy) else com.termux.x11.XiaoianInput.move(dx, dy)
+    fun button(button: Int, down: Boolean) = input.button(button, down)
 
-    fun button(button: Int, down: Boolean) =
-        if (kde) com.anland.termux.XiaoianInput.button(button, down) else com.termux.x11.XiaoianInput.button(button, down)
-
-    fun scroll(dx: Float, dy: Float) =
-        if (kde) com.anland.termux.XiaoianInput.scroll(dx, dy) else com.termux.x11.XiaoianInput.scroll(dx, dy)
+    fun scroll(dx: Float, dy: Float) = input.scroll(dx, dy)
 
     fun click(button: Int) {
         button(button, true)
         button(button, false)
     }
 
-    private fun rawText(s: String) =
-        if (kde) com.anland.termux.XiaoianInput.text(s) else com.termux.x11.XiaoianInput.text(s)
-
-    private fun rawEvdev(evdev: Int, down: Boolean) {
-        if (kde) {
-            com.anland.termux.XiaoianInput.keyEvdev(evdev, down)
-        } else {
-            val keyCode = Evdev.toKeyCode(evdev)
-            if (keyCode >= 0) com.termux.x11.XiaoianInput.key(keyCode, down)
-        }
-    }
-
     // ---- ExtraKeysBar.Sender ---------------------------------------------
 
-    override fun key(action: Int, evdev: Int) = rawEvdev(evdev, action == 0)
-    override fun text(s: String?) { if (!s.isNullOrEmpty()) rawText(s) }
+    override fun key(action: Int, evdev: Int) = input.keyEvdev(evdev, action == 0)
+    override fun text(s: String?) { if (!s.isNullOrEmpty()) input.text(s) }
     override fun toggleKeyboard() = onToggleKeyboard()
     /** No floating virtual keyboard here; the system IME is the only one. */
     override fun toggleVirtualKeyboard() = onToggleKeyboard()
@@ -71,8 +56,8 @@ class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
         if (b != null && b.hasActiveModifier()) {
             b.sendKeyComboFromExternal(evdev)
         } else {
-            rawEvdev(evdev, true)
-            rawEvdev(evdev, false)
+            input.keyEvdev(evdev, true)
+            input.keyEvdev(evdev, false)
         }
     }
 
@@ -85,7 +70,7 @@ class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
         if (s.isEmpty()) return
         val b = bar
         if (b == null || !b.hasActiveModifier()) {
-            rawText(s)
+            input.text(s)
             return
         }
         val map = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
@@ -93,7 +78,7 @@ class DesktopInput(private val de: String) : ExtraKeysBar.Sender {
             val down = map.getEvents(charArrayOf(ch))
                 ?.firstOrNull { it.action == KeyEvent.ACTION_DOWN && !KeyEvent.isModifierKey(it.keyCode) }
             val evdev = down?.let { Evdev.fromKeyCode(it.keyCode) } ?: -1
-            if (evdev < 0) rawText(ch.toString()) else b.sendKeyComboFromExternal(evdev)
+            if (evdev < 0) input.text(ch.toString()) else b.sendKeyComboFromExternal(evdev)
         }
     }
 }

@@ -1,5 +1,7 @@
 package com.xiaoian.app.service
 
+import com.xiaoian.app.model.Desktop
+import com.xiaoian.app.model.DisplayMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -7,7 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 sealed class SessionState {
     object Idle : SessionState()
     object Starting : SessionState()
-    data class Running(val mode: String, val de: String, val isLocked: Boolean = false) : SessionState()
+    data class Running(val mode: DisplayMode, val de: Desktop, val isLocked: Boolean = false) : SessionState()
     object Stopping : SessionState()
     data class Error(val message: String) : SessionState()
 }

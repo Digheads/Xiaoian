@@ -6,9 +6,12 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import kotlin.coroutines.coroutineContext
 
 class AudioPlayer {
@@ -22,6 +25,15 @@ class AudioPlayer {
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val TCP_PORT = 34567
         private const val READ_BUFFER_SIZE = 8192
+
+        /** How long one connection attempt may block before giving up. */
+        private const val CONNECT_TIMEOUT_MS = 1_000
+        /** Pause between attempts; also what makes the retry loop cancel-aware. */
+        private const val CONNECT_RETRY_MS = 500L
+        /** Cap on attempts, so a session whose audio never starts does not retry forever. */
+        private const val CONNECT_ATTEMPTS = 60
+        /** Blocking read cap: a timeout just re-checks isActive instead of wedging the thread. */
+        private const val READ_TIMEOUT_MS = 1_000
     }
 
     suspend fun start() {
@@ -47,19 +59,30 @@ class AudioPlayer {
 
                 audioTrack?.play()
 
-                // Wait for PulseAudio TCP server to come up, retry connection
+                // Wait for the PulseAudio TCP server to come up. Bounded, so a
+                // session whose audio never starts does not retry forever, and
+                // cancel-aware (delay, not Thread.sleep) so stopSession()
+                // interrupts the wait promptly.
                 var connected = false
-                while (coroutineContext.isActive && !connected) {
+                var attempt = 0
+                while (coroutineContext.isActive && !connected && attempt < CONNECT_ATTEMPTS) {
+                    attempt++
                     try {
-                        socket = Socket("127.0.0.1", TCP_PORT)
-                        socket!!.tcpNoDelay = true
+                        val s = Socket()
+                        s.tcpNoDelay = true
+                        s.soTimeout = READ_TIMEOUT_MS
+                        s.connect(InetSocketAddress("127.0.0.1", TCP_PORT), CONNECT_TIMEOUT_MS)
+                        socket = s
                         connected = true
                     } catch (e: Exception) {
-                        Thread.sleep(500)
+                        delay(CONNECT_RETRY_MS)
                     }
                 }
 
-                if (!connected) return@withContext
+                if (!connected) {
+                    Log.w(TAG, "PulseAudio TCP server never came up; giving up after $attempt attempts")
+                    return@withContext
+                }
 
                 val input = socket!!.getInputStream()
                 val buffer = ByteArray(READ_BUFFER_SIZE)
@@ -67,7 +90,13 @@ class AudioPlayer {
                 Log.i(TAG, "Connected to PulseAudio TCP stream on port $TCP_PORT")
 
                 while (coroutineContext.isActive) {
-                    val bytesRead = input.read(buffer)
+                    val bytesRead = try {
+                        input.read(buffer)
+                    } catch (e: SocketTimeoutException) {
+                        // The server is simply idle; loop back and re-check
+                        // isActive so cancellation is still honoured.
+                        continue
+                    }
                     if (bytesRead > 0) {
                         audioTrack?.write(buffer, 0, bytesRead)
                     } else if (bytesRead == -1) {

@@ -3,6 +3,7 @@ package com.xiaoian.app.device
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import com.xiaoian.app.model.DisplayMode
 import java.io.File
 
 /**
@@ -112,12 +113,12 @@ object DeviceSupport {
      * null for neither. Same comparison as the scripts' own check, unset
      * counting as 0.
      */
-    fun configuredDisplayMode(context: Context): String? {
+    fun configuredDisplayMode(context: Context): DisplayMode? {
         val s = displaySettings(context)
         val now = s.map { it.current?.takeIf { v -> v != "null" } ?: "0" }
         return when (now) {
-            s.map { it.extend } -> "extend"
-            s.map { it.mirror } -> "mirror"
+            s.map { it.extend } -> DisplayMode.EXTEND
+            s.map { it.mirror } -> DisplayMode.MIRROR
             else -> null
         }
     }
