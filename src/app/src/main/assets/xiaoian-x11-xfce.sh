@@ -43,10 +43,10 @@ UPDATE_CHECK_INTERVAL=86400
 MESA_REPO="lfdevs/mesa-for-android-container"
 MESA_ASSET_PATTERN="mesa-for-android-container_[^/]*_debian_trixie_arm64\\.tar\\.gz"
 
-# PulseAudio (Termux side) listens on a unix socket in $TMPDIR, which
-# the chroot sees under /tmp. No TCP port is opened.
-PULSE_HOST_DIR="$TMPDIR/xiaoian-pulse"
-PULSE_CHROOT_SOCKET="/tmp/xiaoian-pulse/native"
+# PulseAudio runs inside the chroot (see the session script) and listens on
+# /tmp/pulseaudio.socket, which is $TMPDIR on the host: /tmp is a bind mount
+# of it. Android gets the audio over TCP 34567, not through this socket.
+PULSE_SOCKET="/tmp/pulseaudio.socket"
 
 # Desktop-specific values consumed by the common library (section 3).
 # The X server runs as "app_process /system/bin com.termux.x11.CmdEntryPoint
@@ -905,7 +905,7 @@ do_version() {
     echo "Root:    $INFRA_ROOT"
     echo "Installer: $INSTALLER_DIR"
     echo "Mesa source: $MESA_REPO"
-    echo "Audio:   PulseAudio (chroot package, unix socket $PULSE_HOST_DIR/native)"
+    echo "Audio:   PulseAudio (chroot package, unix socket $PULSE_SOCKET, TCP 34567 to the app)"
     echo "Tmp:     $TMPDIR (chroot /tmp)"
     echo "Updates: GitHub checked at most every $((UPDATE_CHECK_INTERVAL / 3600))h; works offline with cache"
 }
@@ -1051,7 +1051,7 @@ do_stop() {
     stop_session_wrapper
     teardown_session
     rm -f "$SESSION_WRAPPER"
-    rm -rf "$PULSE_HOST_DIR" 2>/dev/null
+    rm -f "$TMPDIR/pulseaudio.socket" 2>/dev/null
 
     echo ""
     echo "[*] Xiaoian stopped."
@@ -1319,21 +1319,24 @@ do_start() {
         chmod +x $DEBIAN_ROOTFS/usr/bin/pm-is-supported
     fi
 
-    # ALSA and PulseAudio clients reach the Termux PulseAudio through its
-    # unix socket (PULSE_HOST_DIR, seen as /tmp/... inside the chroot).
-    cat << ASOUND > $DEBIAN_ROOTFS/etc/asound.conf
+    # ALSA clients go through the pulse plugin. No "server" line here: with
+    # one, the plugin ignores PULSE_SERVER and talks to that address only --
+    # which is how aplay and the other ALSA-only programs stayed silent while
+    # the libpulse ones (Firefox, the XFCE apps) worked.
+    cat << 'ASOUND' > $DEBIAN_ROOTFS/etc/asound.conf
 pcm.!default {
     type pulse
-    server "unix:$PULSE_CHROOT_SOCKET"
 }
 ctl.!default {
     type pulse
-    server "unix:$PULSE_CHROOT_SOCKET"
 }
 ASOUND
 
+    # The session script exports PULSE_SERVER as well; this is the fallback
+    # for anything started with a cleared environment. autospawn is off so a
+    # client never starts a second, sinkless PulseAudio of its own.
     cat << PULSECLIENT > $DEBIAN_ROOTFS/etc/pulse/client.conf
-default-server = unix:$PULSE_CHROOT_SOCKET
+default-server = unix:$PULSE_SOCKET
 autospawn = no
 PULSECLIENT
 
@@ -1674,8 +1677,9 @@ export TEMP=/tmp
 export TMP=/tmp
 export XDG_RUNTIME_DIR=/run/user/0
 export ICEAUTHORITY=/root/.ICEauthority
+# Must match PULSE_SOCKET above. ALSA clients need no variable of their own:
+# /etc/asound.conf routes them into the pulse plugin, which reads this too.
 export PULSE_SERVER=unix:/tmp/pulseaudio.socket
-export ALSA_CARD=default
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export MOZ_ALLOW_RUN_AS_ROOT=1
@@ -1763,7 +1767,7 @@ cleanup() {
     RC=\${1:-\$?}
     trap - EXIT TERM INT HUP
     teardown_session >> "\$LOG_FILE" 2>&1
-    rm -rf "$PULSE_HOST_DIR" 2>/dev/null
+    rm -f "$TMPDIR/pulseaudio.socket" 2>/dev/null
     exit "\$RC"
 }
 
