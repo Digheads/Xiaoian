@@ -8,4 +8,6 @@ ext.termuxX11VersionName = {
 // lorie-app, or a host app integrating it) should read this instead of letting AGP pick its
 // own default, otherwise :lorie's CMake config differs between them and its native code gets
 // compiled twice.
-ext.termuxX11NdkVersion = "29.0.14206865"
+// 26.3 (r26d), what upstream builds the X server with. Newer NDKs fail on
+// libx11: their bionic headers annotate locale_t, which this source predates.
+ext.termuxX11NdkVersion = "26.3.11579264"

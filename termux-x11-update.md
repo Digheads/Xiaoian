@@ -19,14 +19,19 @@ If Termux:X11 releases a new version and you want to update the integration, fol
    - Also look for and copy `templates/` or similar folders if they exist (e.g. `src/main/templates`).
 3. Update `src/lorie/build.gradle` using the original source code's `app/build.gradle` as a reference, but **make sure to keep our custom modifications** (see step 4).
 
-## 3. Update the C++ Precompiled Libraries (JNI Libs)
+## 3. Update the C sources and the submodules
 
-Since we cannot compile the C++ code on Windows using the NDK, we extract the precompiled libraries directly from the APK:
-1. Rename the downloaded `.apk` file extension to `.zip` and extract it.
-2. Navigate to the extracted folder's `lib/arm64-v8a/` directory.
-3. Copy all `.so` files found there (e.g., `libXlorie.so`, `libdatastore_shared_counter.so`, etc.) into your Xiaoian project here:
-   `src/lorie/src/main/jniLibs/arm64-v8a/`
-4. (If you want to support other architectures like `armeabi-v7a` or `x86_64`, copy them into their respective folders as well).
+`libXlorie.so` is built here, from `src/lorie/src/main/cpp`, so there is nothing
+to lift out of a release APK:
+
+1. Replace the contents of `src/lorie/src/main/cpp/lorie`, `recipes` and
+   `patches` from the new source drop.
+2. Move each submodule (`xserver`, `libx11`, `pixman`, `xkbcomp` and the rest)
+   to the commit the new version pins. Upstream's own `.gitmodules` and its tree
+   list them; `git -C <submodule> checkout <sha>` for each, then commit the
+   gitlinks.
+3. Build with `./gradlew.bat :lorie:externalNativeBuildDebug` before anything
+   else, and keep the three local build fixes (see step 4E).
 
 ## 4. Restore Xiaoian-Specific Modifications (CRITICAL!)
 
@@ -55,7 +60,9 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.0"
 }
 ```
-*Tip: You can safely remove the C/C++ build steps (CMake, NDK) from `src/lorie/build.gradle`, since we are pulling them in via jniLibs!*
+*Keep the `externalNativeBuild` blocks and `ndkVersion termuxX11NdkVersion`:
+the X server is built here. The NDK version lives in `src/lorie/version.gradle`
+and has to stay at 26.3 — newer bionic headers break libx11.*
 
 ### C. Load `libXlorie.so` from the extracted library directory (CRITICAL)
 
@@ -171,6 +178,25 @@ it must reconnect to the same desktop.
 
 The same edit also moves `linkToDeath` behind the `known` check — without that
 the retry loop registered a death recipient every second.
+
+### E. The three local build fixes (CRITICAL on Windows)
+
+Upstream only ever builds this on Linux, so `src/lorie/src/main/cpp` carries
+three changes of ours. All of them are in `CMakeLists.txt`, plus one new file:
+
+1. **`recipes/host_tool.cmake`** builds and runs the `makekeys` generator on
+   the machine doing the build. Upstream calls `/usr/bin/gcc` and redirects
+   with `>`, neither of which exists here; this one works with gcc or with
+   MSVC. `xkbcomp.cmake` calls it.
+2. **`target_apply_patch`** calls `patch` directly instead of going through
+   `bash -c "... || ..."`, where Windows found another bash and split the paths
+   on their spaces — silently skipping every patch, which shows up much later
+   as a missing `GL/gl.h`.
+3. **The `case-shim` include directory**, for bionic's `#include <xlocale.h>`
+   finding libx11's `X11/Xlocale.h` on a case-insensitive filesystem.
+
+`recipes/xserver.cmake` also links `Xlorie` with `-Wl,-s`, or the library goes
+into the APK at 20 MB.
 
 ## 5. Verification
 - `XiaoianApplication.kt` must continue to extend the `com.termux.x11.LorieApp` class.

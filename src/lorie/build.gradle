@@ -26,9 +26,29 @@ android {
     buildToolsVersion "36.0.0"
     //noinspection GrDeprecatedAPIUsage
     compileSdk 35
+    // The X server is built with the NDK upstream pins; newer ones do not
+    // compile libx11 (locale_t in the bionic headers). :anland and :terminal
+    // are small and modern enough for the current one.
     ndkVersion termuxX11NdkVersion
     defaultConfig {
         minSdkVersion 24
+
+        // The X server is built from src/main/cpp rather than shipped as a
+        // prebuilt .so, like :anland and :terminal. arm64 only: everything it
+        // renders for lives in the arm64 Debian rootfs.
+        //
+        // xkbcomp's parser needs bison. On Windows there is none by default,
+        // so tools/winflexbison (see README) is used when it is there.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                def bison = rootProject.file('../tools/winflexbison/win_bison.exe')
+                if (bison.exists())
+                    arguments "-DBISON_EXECUTABLE=${bison.absolutePath}"
+            }
+        }
         targetSdkVersion 34
         buildConfigField "String", "VERSION_NAME", "\"${termuxX11VersionName}\""
         buildConfigField "String", "COMMIT", "\"" + ("git rev-parse HEAD\n".execute().getText().trim() ?: (System.getenv('CURRENT_COMMIT') ?: "NO_COMMIT")) + "\""
@@ -40,6 +60,14 @@ android {
     compileOptions.sourceCompatibility JavaVersion.VERSION_1_9
     compileOptions.targetCompatibility JavaVersion.VERSION_1_9
     packagingOptions.jniLibs.useLegacyPackaging false
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version nativeCmakeVersion
+        }
+    }
+
     buildFeatures.aidl true
     buildFeatures.buildConfig true
 

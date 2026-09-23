@@ -4,12 +4,37 @@ android {
     namespace 'com.anland.termux'
     buildToolsVersion "36.0.0"
     compileSdk 35
+    ndkVersion nativeNdkVersion
 
     defaultConfig {
         minSdkVersion 28
         targetSdkVersion 35
 
         consumerProguardFiles 'proguard-rules.pro'
+
+        // Built from src/main/jni, not shipped as prebuilts: a prebuilt .so
+        // and the sources beside it drift apart, and once did -- a missing
+        // Native method crashed MainActivity on the first surfaceChanged.
+        //
+        // arm64 only: the Debian rootfs and the desktop it renders are arm64,
+        // and the display consumer needs memfd_create, which bionic only
+        // declares from API 30. KDE needs Android 11 anyway (see the device
+        // support screen), while the app itself still starts on API 28.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_PLATFORM=android-30'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/jni/CMakeLists.txt'
+            version nativeCmakeVersion
+        }
     }
 
     compileOptions {

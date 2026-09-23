@@ -265,6 +265,29 @@ the next unmount.
 
 ---
 
+## Building
+
+```sh
+git clone --recursive …          # or: git submodule update --init --recursive
+cd src
+./gradlew.bat :app:assembleDebug
+```
+
+Everything native is built from source, including the X server, so the clone
+has to bring the submodules with it — they are the X sources Termux:X11 needs.
+[ARCHITECTURE.md](ARCHITECTURE.md) has the details; the short version of what
+the machine needs:
+
+| | |
+|---|---|
+| **JDK 21, Android SDK 35** | Paths in `src/gradle.properties` and `src/local.properties` |
+| **Two NDKs** | 26.3 for the X server, a current one for the rest |
+| **CMake and Ninja** | Either from the SDK, or any install pointed at by `cmake.dir` in `src/local.properties` |
+| **A host C compiler** | gcc, or Visual Studio on Windows: a couple of generators run on the build machine |
+| **bison** | On Windows, unpack [winflexbison](https://github.com/lexxmark/winflexbison) into `tools/` (git-ignored) |
+
+---
+
 ## Release build
 
 `./gradlew :app:assembleRelease` (in `src/`) produces a signed

@@ -18,53 +18,27 @@ If the Anland project (`lfdevs/anland-termux`) releases a new version and you wa
    - `AndroidManifest.xml`
 3. You do **NOT** need to overwrite the `anland/build.gradle` file. We use a custom, `com.android.library` formatted Gradle file that has all C++ and CMake references removed. Keep our existing `build.gradle`!
 
-## 3. Update the C++ (JNI) Libraries
+## 3. Update the C (JNI) sources
 
-Since we bypass C++ compilation, we extract the native binaries directly from the APK:
-1. Rename the downloaded `.apk` file extension to `.zip` and extract it.
-2. Navigate to the extracted folder's `lib/arm64-v8a/` directory.
-3. Copy all `.so` files found there (e.g., `libanland_consumer.so`, `libfdhelper.so`, etc.) into the following folder in the Xiaoian project (overwriting the old ones):
-   `src/anland/src/main/jniLibs/arm64-v8a/`
-4. (Optional: If you want to support other architectures like x86_64 or armeabi-v7a, copy their respective folders into `jniLibs` as well).
+The natives are built here, from `src/anland/src/main/jni`, so there is nothing
+to lift out of a release APK. Replace the sources from the new drop and let
+Gradle build them:
 
-### 3b. The display daemon (`libanland.so`) — do not skip this
+| File | Built from | What it is |
+|---|---|---|
+| `libanland_consumer.so` | `native_consumer.c`, `native_audio.c`, `camera_service.c`, `anland_core/…` | JNI library loaded by the Java frontend |
+| `libfdhelper.so` | `fd_helper.c` | Root helper executable (named `lib*.so` so it gets extracted with the execute bit) |
+| `libanland.so` | `daemon/anland.c` | **The display daemon.** Also an executable, not a library |
 
-Three native files are needed, not two:
+`src/main/jni/CMakeLists.txt` defines all three, and `build.gradle` points
+`externalNativeBuild` at it. If upstream's CMakeLists gains a source file or a
+library, mirror it there. Keep `-DANDROID_PLATFORM=android-30` in
+`build.gradle`: the consumer calls `memfd_create()`, which bionic only declares
+from API 30 on, even though the module's `minSdk` is 28.
 
-| File | What it is |
-|---|---|
-| `libanland_consumer.so` | JNI library loaded by the Java frontend |
-| `libfdhelper.so` | Root helper executable (named `lib*.so` so it gets extracted with the execute bit) |
-| `libanland.so` | **The display daemon.** Also an executable, not a library |
-
-Upstream builds the daemon from `jni/daemon/anland.c` (see `jni/CMakeLists.txt`,
-which sets `PREFIX "lib"` / `SUFFIX ".so"` on the `anland` target). Check
-`lib/arm64-v8a/` in the extracted APK first and copy it like the others.
-
-If it is not in the APK, build it from the source drop — it only needs two C
-files and `liblog`, so no CMake or Gradle NDK setup is required:
-
-```bash
-NDK="$ANDROID_SDK_ROOT/ndk/29.0.14206865/toolchains/llvm/prebuilt/windows-x86_64/bin"
-cd src/anland/src/main/jni
-
-"$NDK/aarch64-linux-android28-clang" -O2 -Wall -fPIE -pie     -I anland_core/common     daemon/anland.c anland_core/common/socket_utils.c     -llog -o /tmp/libanland.so
-
-"$NDK/llvm-strip" --strip-unneeded /tmp/libanland.so     -o ../jniLibs/arm64-v8a/libanland.so
-```
-
-Use the API level matching the project's `minSdk` (28). Verify with
-`file libanland.so` — it must say *ELF 64-bit … ARM aarch64 … pie executable*.
-
-> **Since this guide was written, the module got a build script.**
-> `sh src/anland/build-natives.sh` rebuilds all three natives from the in-tree
-> `src/main/jni/` sources with the right flags and API level, and then verifies
-> the JNI symbols with `llvm-nm`. Prefer it over the command above, and use it
-> whenever you change anything under `src/main/jni/` — note that the consumer
-> library must be built at **API 30**, not 28, because it calls
-> `memfd_create()`. Lifting the `.so` files out of the release APK, as steps 3
-> and 3b describe, is still the right move when you are taking a new upstream
-> release rather than changing our copy of the sources.
+Check afterwards that every `native` method in `Native.java` and `Clipboard.java`
+still exists in the C sources — the compiler will not tell you, the app will,
+by crashing on first use.
 
 **Why the odd name:** `/data/data` is mounted non-executable (W^X), so a binary
 there cannot be run. Android's packager extracts APK entries matching `lib*.so`

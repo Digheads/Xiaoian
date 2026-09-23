@@ -77,6 +77,7 @@ The Gradle root is `src/`, not the repository root. Build from there.
 ## Building
 
 ```sh
+git clone --recursive …          # or: git submodule update --init --recursive
 cd src
 ./gradlew.bat :app:assembleDebug          # or :app:assembleRelease
 ../tools/platform-tools/adb.exe install -r app/build/outputs/apk/debug/app-debug.apk
@@ -84,27 +85,56 @@ cd src
 
 Java 21 (set in `src/gradle.properties`), compileSdk 35, minSdk 28, arm64 only.
 
-### Native code is built by hand
+### Native code is built from source
 
-**No module has an `externalNativeBuild` block.** The `.so` files under each
-module's `src/main/jniLibs/arm64-v8a/` are prebuilts, and each module that has
-native sources carries a script that regenerates them:
+Every `.so` in the APK is built by Gradle from the sources in this tree. There
+are no prebuilt binaries and no `jniLibs/` directories: those drift from the
+sources beside them, and once did — `libanland_consumer.so` was missing a
+symbol its Java side declared, and crashed on first use.
 
-```sh
-sh src/anland/build-natives.sh      # libanland_consumer.so, libanland.so, libfdhelper.so
-sh src/terminal/build-natives.sh    # libtermux.so, libptyspawn.so
-```
+| Module | CMake | NDK | Produces |
+|---|---|---|---|
+| `:anland` | `src/main/jni/CMakeLists.txt` | `nativeNdkVersion` | `libanland_consumer.so`, `libanland.so`, `libfdhelper.so` |
+| `:terminal` | `src/main/jni/CMakeLists.txt` | `nativeNdkVersion` | `libtermux.so`, `libptyspawn.so` |
+| `:lorie` | `src/main/cpp/CMakeLists.txt` | `termuxX11NdkVersion` | `libXlorie.so` — the X server and the X libraries it needs |
 
-Run the script after touching anything under that module's `src/main/jni/`.
-Nothing else will: a prebuilt that has drifted from the source beside it
-compiles and installs perfectly happily and then crashes on first use, which is
-exactly what `libanland_consumer.so` once did — it was missing a symbol that its
-Java side declared. Both scripts end by checking the expected JNI symbols with
-`llvm-nm`, which is the only thing standing between you and that failure mode.
+The NDK versions are in `src/gradle.properties` and `src/lorie/version.gradle`,
+and they are deliberately different. **The X server only builds with NDK 26.3**;
+newer bionic headers annotate `locale_t` in a way libx11 predates. The other two
+are small and modern and use the current NDK.
 
-API levels are not interchangeable: the Anland consumer must be built at **API
-30** because it calls `memfd_create()`, which bionic only declares from 30 on.
-The terminal natives are built at 28 to match `minSdk`.
+API levels are not interchangeable either: the Anland consumer is built at **API
+30** (`-DANDROID_PLATFORM=android-30`) because it calls `memfd_create()`, which
+bionic only declares from 30 on. Everything else follows the module's `minSdk`.
+
+### The X server's sources are submodules
+
+`:lorie` carries the glue (`src/main/cpp/lorie`), the CMake recipes and the
+patches; the X server, libx11, pixman, xkbcomp and a dozen more are git
+submodules pinned to the commits upstream Termux:X11 builds against. Without
+`--recursive` they are empty directories and CMake stops at the first missing
+header. The patches under `src/main/cpp/patches` are applied to those working
+trees at configure time, which is why the submodules are `ignore = dirty`.
+
+Three things in that build are ours, and all three exist because upstream only
+ever builds on Linux:
+
+- **A host compiler.** `makekeys` runs on the machine doing the build, not on
+  the phone. Upstream calls `/usr/bin/gcc` and redirects with `>`; here
+  `recipes/host_tool.cmake` compiles and runs it, with gcc or with MSVC (found
+  through Visual Studio's `vswhere`).
+- **bison**, for xkbcomp's parser. On Windows there is none; drop
+  [winflexbison](https://github.com/lexxmark/winflexbison) into `tools/`
+  (git-ignored) and the build finds `tools/winflexbison/win_bison.exe`.
+- **A case-insensitive filesystem shim.** On Windows, bionic's
+  `#include <xlocale.h>` finds libx11's `X11/Xlocale.h`, which includes
+  `locale.h` right back, and every libx11 file fails on an undefined
+  `locale_t`. The top-level `CMakeLists.txt` puts a copy of bionic's
+  `xlocale.h` first in the include path.
+
+`libXlorie.so` is linked with `-Wl,-s`. It is built `RelWithDebInfo` whatever
+the app's build type, so Gradle's own strip step does not touch it, and it
+would otherwise be 20 MB in the APK instead of 3.5.
 
 ### Executables shipped as `lib*.so`
 
@@ -125,28 +155,16 @@ guide, because each is integrated a different way:
 
 | Component | Guide | How it is integrated |
 |---|---|---|
-| Termux:X11 (`:lorie`) | [termux-x11-update.md](termux-x11-update.md) | Java from source, native `.so` lifted out of the official release APK |
-| Anland (`:anland`) | [anland-update.md](anland-update.md) | Same: Java from source, native `.so` from the release APK |
-| Termux terminal (`:terminal`) | [terminal-update.md](terminal-update.md) | Fully vendored — Java *and* the native source, built here |
+| Termux:X11 (`:lorie`) | [termux-x11-update.md](termux-x11-update.md) | Java and C from source; the X sources it needs are submodules |
+| Anland (`:anland`) | [anland-update.md](anland-update.md) | Java and JNI from source |
+| Termux terminal (`:terminal`) | [terminal-update.md](terminal-update.md) | Fully vendored — Java *and* the native source |
 
-The first two exist because their C/C++ builds want a full NDK/CMake but I don't;
-so taking the prebuilt `.so` out of the matching release APK sidesteps
-that entirely. **The APK and the source drop must be the exact same version**,
-or the Java side will call into a library that does not have the symbol.
+All three build here, so a Java side and a native side can no longer disagree
+about a symbol. Updating one means replacing its source drop and, for `:lorie`,
+moving the submodules to whatever commits the new version pins.
 
-`:terminal` is different: its native side is one small C file, so it is built
-here from the copied source, and `src/terminal/build-natives.sh` produces it.
-The guide is mostly about re-applying the four local divergences and re-running
-the symbol check.
+One thing that applies whichever guide you are following:
 
-Two things that apply whichever guide you are following:
-
-- **The `.so` files under `jniLibs/` are prebuilts.** Nothing in the Gradle
-  build regenerates them, so a file that has drifted from the source beside it
-  builds and installs happily and crashes on first use. If you change in-tree
-  native sources, run that module's `build-natives.sh`; if you replace the
-  binaries from an APK, check that the Java side's `native` declarations still
-  match what the new library exports.
 - **The frontends carry local modifications**, listed in each guide, and they
   have to be re-applied after every update. The ones most likely to be lost are
   Termux:X11's `libXlorie.so` lookup through `$XIAOIAN_LIB_DIR` and Anland's

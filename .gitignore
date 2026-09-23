@@ -39,3 +39,6 @@ tools
 
 # Release signing credentials (see README, "Release build")
 keystore.properties
+
+# Downloaded build tools (see README, native build)
+tools/

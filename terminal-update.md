@@ -83,9 +83,8 @@ and the fix is to move that resource use or split the module again.
 
 ### B. No `-Werror` in the native build
 
-`src/terminal/build-natives.sh` compiles with `-Wall -Wextra` but not
-`-Werror`. Leave it that way: a future NDK bump should not fail the build over
-vendored code.
+`src/terminal/src/main/jni/CMakeLists.txt` compiles without `-Werror`. Leave
+it that way: a future NDK bump should not fail the build over vendored code.
 
 ### C. `TerminalSession` can adopt an existing pty
 
@@ -121,14 +120,20 @@ It lives in `com.termux.terminal` because it needs the package-private `JNI`
 class. `openPty()` does what `createSubprocess()` does up to the fork and stops
 there. Just make sure step 3 did not delete it.
 
-## 5. Rebuild the natives
+## 5. The natives
 
 ```bash
-sh src/terminal/build-natives.sh
+cd src
+./gradlew.bat :terminal:externalNativeBuildDebug
 ```
 
-This produces `libtermux.so` (from `termux.c` **and** our `pty_open.c`) and
-`libptyspawn.so`, strips them, and then verifies five symbols with `llvm-nm`:
+Gradle builds them from `src/terminal/src/main/jni` via its `CMakeLists.txt`:
+`libtermux.so` (from `termux.c` **and** our `pty_open.c`) and `libptyspawn.so`,
+the pty helper that is an executable named `lib*.so`. A new source file
+upstream means adding it there.
+
+Check afterwards that every `native` method in `com.termux.terminal.JNI` and
+`XiaoianPty` still has a matching `Java_…` function in the C sources:
 
 ```
 Java_com_termux_terminal_JNI_createSubprocess
@@ -138,14 +143,8 @@ Java_com_termux_terminal_JNI_close
 Java_com_termux_terminal_XiaoianPty_openPty
 ```
 
-**Do not skip this step and do not ignore its output.** The `.so` files under
-`jniLibs/` are prebuilts; no Gradle task regenerates them. A prebuilt that has
-drifted from the source beside it compiles and installs perfectly happily and
-then crashes on first use — which is exactly what `libanland_consumer.so` once
-did, missing a symbol its Java side declared. The `llvm-nm` check is the only
-thing standing between you and that.
-
-If upstream adds a native method, add its symbol to the list in the script.
+Nothing fails at build time if one is missing; the app crashes on first use
+instead, which is exactly what `libanland_consumer.so` once did.
 
 ## 6. Check what upstream changed underneath us
 
@@ -156,8 +155,8 @@ Two interfaces to look at:
   become compile errors in `TerminalSessions.StoreClient` and
   `TerminalActivity.ViewClient`. That is the good case — a silently changed
   *default* would be worse, so read the diff even if it compiles.
-- **`JNI`.** A changed signature means `build-natives.sh`'s symbol list and
-  `src/terminal/consumer-rules.pro` need the same change.
+- **`JNI`.** A changed signature means `src/terminal/consumer-rules.pro` needs
+  the same change.
 
 Also re-check `consumer-rules.pro` if classes moved: it keeps
 `com.termux.terminal.JNI`'s native methods by name (JNI binds by symbol name,

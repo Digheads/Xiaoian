@@ -53,13 +53,13 @@ Kept deliberately small, so that re-syncing with upstream stays a diff.
 
 ## Native code
 
-`build-natives.sh` produces, into `src/main/jniLibs/arm64-v8a/`:
+Gradle builds these from `src/main/jni` (`CMakeLists.txt`, wired up in
+`build.gradle`):
 
 - **`libtermux.so`** -- the JNI library behind `com.termux.terminal.JNI`, from
-  the vendored `termux.c`. The script verifies all four
-  `Java_com_termux_terminal_JNI_*` symbols with `llvm-nm` afterwards; a
-  prebuilt silently missing a declared symbol is how `libanland_consumer.so`
-  once crashed the app.
+  the vendored `termux.c` and our `pty_open.c`. Nothing checks that every
+  declared `native` method has a `Java_…` function: a library silently missing
+  a declared symbol is how `libanland_consumer.so` once crashed the app.
 - **`libptyspawn.so`** -- not upstream. A ~40 line executable that attaches a
   command to an existing pty slave as its controlling terminal, so the root
   side of a session can be started from the one already-open `RootShell`

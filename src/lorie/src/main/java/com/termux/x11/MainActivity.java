@@ -166,9 +166,7 @@ public class MainActivity extends AppCompatActivity {
         applyWindowSettings();
 
         frm = findViewById(R.id.frame);
-        findViewById(R.id.preferences_button).setOnClickListener((l) -> startActivity(new Intent(this, LoriePreferences.class) {{ setAction(Intent.ACTION_MAIN); }}));
 
-        findViewById(R.id.exit_button).setOnClickListener((l) -> finish());
 
         LorieView lorieView = findViewById(R.id.lorieView);
         View lorieParent = (View) lorieView.getParent();
@@ -1078,9 +1076,6 @@ public class MainActivity extends AppCompatActivity {
 
             setTerminalToolbarView();
             findViewById(R.id.mouse_buttons).setVisibility(prefs.showMouseHelper.get() && "1".equals(prefs.touchMode.get()) && connected ? View.VISIBLE : View.GONE);
-            // Xiaoian: no logo and Preferences/Exit buttons while disconnected,
-            // just black -- the same as Anland shows without a compositor.
-            findViewById(R.id.stub).setVisibility(View.INVISIBLE);
             getLorieView().setVisibility(connected?View.VISIBLE:View.INVISIBLE);
 
             // We should recover connection in the case if file descriptor for some reason was broken...
