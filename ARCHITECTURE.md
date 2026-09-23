@@ -429,7 +429,7 @@ host's `/dev` is not a child of `/data`, so unmounting it reaches nothing.
 
 ### Why `/mnt/android` is not
 
-The local terminal mounts the whole Android filesystem with `-o rbind /`.
+The Xiaoian terminal mounts the whole Android filesystem with `-o rbind /`.
 `--bind` would not do — it is not recursive, so `/data`, `/system` and
 `/storage` would all be missing. But the replica's root *is* a peer of the real
 `/`, so unmounting its children propagates to the host's `/system`, `/data` and
@@ -457,9 +457,9 @@ that) and `rslave`s every mount before unmounting it.
 ### Internal storage, and why the desktops get only one branch
 
 A file has one address everywhere: **`/mnt/android/storage/emulated/0`**, in the
-local rootfs and in both desktop chroots. In the local one it is simply part of
+tool rootfs and in both desktop chroots. In the tool rootfs it is simply part of
 the recursive bind of `/`; the desktops bind that single directory to that same
-path. `/android` in the local rootfs is a symlink to `/mnt/android`, and
+path. `/android` in the tool rootfs is a symlink to `/mnt/android`, and
 `/root/Storage` in each desktop is a symlink to the storage path, because
 neither is something anyone wants to type.
 
@@ -573,7 +573,7 @@ jobs:
 
 | | Consequence |
 |---|---|
-| `ensure_mount`'s "already there?" check | Four `could not mount` lines on every local terminal, after everything had mounted fine |
+| `ensure_mount`'s "already there?" check | Four `could not mount` lines on every Xiaoian terminal, after everything had mounted fine |
 | the `/mnt/android` guard | Every session re-bound the whole Android tree — two full copies measured on the device |
 | `unmountTree` | Found nothing, so `releaseAndroidBind` silently never released anything |
 
@@ -589,7 +589,7 @@ to `/data/data/…` and back.
 
 ### A chroot terminal without its desktop
 
-If the desktop is not running, the session mounts the same set as the local one
+If the desktop is not running, the session mounts the same set as the Xiaoian terminal
 (`proc`, `sys`, `dev`, `dev/pts` and internal storage) — all of them in
 `CHROOT_MOUNTS`, so a desktop started later finds them (`is_mounted || mount`)
 and its stop still tears them down. `run`, `tmp` and `dev/shm` are left alone on

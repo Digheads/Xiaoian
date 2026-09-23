@@ -12,7 +12,7 @@ its own.
 |---|---|
 | **KDE Plasma 6** | Wayland, rendered by the built-in Anland frontend |
 | **XFCE 4** | X11, rendered by the built-in Termux:X11 frontend |
-| **Terminal** | A real pty with job control, in the desktop chroot or in a small tool rootfs of its own |
+| **Terminal** | A real pty with job control, in the desktop chroot or in a small Debian bootstrap environment of its own |
 
 ### The three documents
 
@@ -154,7 +154,7 @@ same tree, and the terminal says so.
 ### Tabs
 
 The tab strip runs along the top. **+** opens a new session and asks which of
-the three you want. **Long press a tab** for its menu:
+the four you want. **Long press a tab** for its menu:
 
 - **New session** — same as **+**
 - **Rename** — up to 15 characters; leave it empty to go back to the default name
@@ -177,7 +177,7 @@ The **gear key** on the bar opens the app's settings, where the layout lives.
 
 ### Reaching your phone's files
 
-Your internal storage is at the **same path everywhere** — in a local terminal,
+Your internal storage is at the **same path everywhere** — in a Xiaoian terminal,
 in a chroot terminal, and on either desktop:
 
 ```
@@ -189,10 +189,10 @@ Two shortcuts exist so you never have to type that:
 
 | | |
 |---|---|
-| `/android` | In a **local** terminal, a symlink to `/mnt/android` |
+| `/android` | In a **Xiaoian** terminal, a symlink to `/mnt/android` |
 | `~/Storage` | On a **desktop**, a symlink to your internal storage — it shows up in the file manager's Home |
 
-A **local** terminal gets more than storage: the whole Android filesystem is
+A **Xiaoian** terminal gets more than storage: the whole Android filesystem is
 there, so `/android/system`, `/android/data` and the rest are all browsable. The
 desktops get only the storage branch of that tree, which is the part worth
 having and the part that is safe to unmount afterwards.
@@ -203,7 +203,7 @@ having and the part that is safe to unmount afterwards.
 Files you save from the desktop land in your phone's storage exactly as if an
 Android app had written them, so they show up in Gallery and Files normally.
 
-The local terminal's mount is released once the last live local session is gone;
+The Xiaoian terminal's mount is released once the last live Xiaoian session is gone;
 the desktops' is released when the session stops.
 
 ---
@@ -255,7 +255,7 @@ Check the rule in your root manager, then try again. Rebooting the phone also
 resets a `shell` grant.
 
 **The terminal says the environment is not installed.** For a desktop chroot,
-install that desktop from the dashboard first. For a local session the app
+install that desktop from the dashboard first. For a Xiaoian session the app
 installs the bootstrap environment itself, so this only means the install failed —
 check your connection and free space.
 

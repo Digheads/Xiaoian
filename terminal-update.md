@@ -171,7 +171,7 @@ and `:app`'s release build has `minifyEnabled true`) and the whole of
 2. `cd src && ./gradlew.bat :terminal:assembleRelease` — must be clean.
 3. `./gradlew.bat :app:assembleRelease` too, not just debug: R8 is where JNI
    keep rules and the reflective text-selection code break.
-4. On the device, open a local terminal and check the things that depend on the
+4. On the device, open a Xiaoian terminal and check the things that depend on the
    parts we touched:
    - a prompt appears at all (the adopted pty works),
    - `Ctrl-C` interrupts and `vim` draws (controlling terminal, job control),
