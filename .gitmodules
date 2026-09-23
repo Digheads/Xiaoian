@@ -1,0 +1,48 @@
+[submodule "libtirpc"]
+	path = src/lorie/src/main/cpp/libtirpc
+	url = https://github.com/alisw/libtirpc
+[submodule "pixman"]
+	path = src/lorie/src/main/cpp/pixman
+	url = https://gitlab.freedesktop.org/pixman/pixman.git
+[submodule "libfontenc"]
+	path = src/lorie/src/main/cpp/libfontenc
+	url = https://gitlab.freedesktop.org/xorg/lib/libfontenc.git
+[submodule "libxau"]
+	path = src/lorie/src/main/cpp/libxau
+	url = https://gitlab.freedesktop.org/xorg/lib/libxau.git
+[submodule "libxdmcp"]
+	path = src/lorie/src/main/cpp/libxdmcp
+	url = https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+[submodule "libxfont"]
+	path = src/lorie/src/main/cpp/libxfont
+	url = https://gitlab.freedesktop.org/xorg/lib/libxfont.git
+[submodule "libxkbfile"]
+	path = src/lorie/src/main/cpp/libxkbfile
+	url = https://gitlab.freedesktop.org/xorg/lib/libxkbfile.git
+[submodule "libxshmfence"]
+	path = src/lorie/src/main/cpp/libxshmfence
+	url = https://gitlab.freedesktop.org/xorg/lib/libxshmfence.git
+[submodule "libxtrans"]
+	path = src/lorie/src/main/cpp/libxtrans
+	url = https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+[submodule "libepoxy"]
+	path = src/lorie/src/main/cpp/libepoxy
+	url = https://github.com/anholt/libepoxy
+[submodule "libxcvt"]
+	path = src/lorie/src/main/cpp/libxcvt
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcvt.git
+[submodule "libx11"]
+	path = src/lorie/src/main/cpp/libx11
+	url = https://gitlab.freedesktop.org/xorg/lib/libx11.git
+[submodule "xorgproto"]
+	path = src/lorie/src/main/cpp/xorgproto
+	url = https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+[submodule "xkbcomp"]
+	path = src/lorie/src/main/cpp/xkbcomp
+	url = https://gitlab.freedesktop.org/xorg/app/xkbcomp.git
+[submodule "xserver"]
+	path = src/lorie/src/main/cpp/xserver
+	url = https://gitlab.freedesktop.org/xorg/xserver.git
+[submodule "bzip2"]
+	path = src/lorie/src/main/cpp/bzip2
+	url = https://gitlab.com/bzip2/bzip2.git
