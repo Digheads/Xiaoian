@@ -662,10 +662,11 @@ what the test phone happens to be:
 - **`plan/`** is a set of early design notes. Parts are superseded and at least
   one claim in it was wrong (the licensing); it is kept for history, not as a
   specification.
-- **`ui/screens/LogViewerScreen.kt`** is not referenced from anywhere. Dead, or
-  not wired up yet. (`SettingsScreen.kt` and `display/DisplayDetector.kt` were
-  the other two until they became the app's settings and the external-display
-  picker.)
+- **The log viewer reads through the root shell.** The logs are in the
+  desktops' infra roots under `/data/local`, owned by root, so
+  `logs/DesktopLogs` lists them (by glob, `*.log` and `*.log.N`) and reads them
+  over `RootShell.shared` like any other short command — only the last 512 KB,
+  since a session log can grow without bound.
 - **`XiaoianService.ACTION_TERMINAL`** is handled but no notification button
   sends it.
 - **`XiaoianApplication` extends `LorieApp`**, not `Application` — Termux:X11's

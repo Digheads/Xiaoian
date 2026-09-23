@@ -56,4 +56,4 @@ For the same reason the three settings screens (`SettingsActivity` in `:app`, An
 
 - `XiaoianApplication` extends Termux:X11's `LorieApp`, which must run for the X11 frontend.
 - `nonTransitiveRClass=true` project-wide, hence `:terminal`'s namespace is `com.termux.view`.
-- `ui/screens/LogViewerScreen.kt` is unreferenced; `XiaoianService.ACTION_TERMINAL` is handled but never sent.
+- `XiaoianService.ACTION_TERMINAL` is handled but never sent.

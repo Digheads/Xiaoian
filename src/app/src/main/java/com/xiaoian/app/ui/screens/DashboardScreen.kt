@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -69,6 +70,7 @@ fun DashboardScreen(
         if (!hasExternalDisplay && selectedMode != DisplayMode.LOCAL) selectedMode = DisplayMode.LOCAL
     }
     var showUninstallDialog by remember { mutableStateOf<Desktop?>(null) }
+    var showLogsFor by remember { mutableStateOf<Desktop?>(null) }
     var askPasswordFor by remember { mutableStateOf<Desktop?>(null) }
     askPasswordFor?.let { de ->
         RootPasswordDialog(
@@ -307,6 +309,7 @@ fun DashboardScreen(
             retargeting = retargeting,
             retargetError = retargetError,
             onUninstall = { showUninstallDialog = Desktop.XFCE },
+            onShowLogs = { showLogsFor = Desktop.XFCE },
             onOpenDesktop = { openDesktop(Desktop.XFCE) },
             onLockPhone = {
                 context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
@@ -331,12 +334,25 @@ fun DashboardScreen(
             retargeting = retargeting,
             retargetError = retargetError,
             onUninstall = { showUninstallDialog = Desktop.KDE },
+            onShowLogs = { showLogsFor = Desktop.KDE },
             onOpenDesktop = { openDesktop(Desktop.KDE) },
             onLockPhone = {
                 context.startActivity(android.content.Intent(context, com.xiaoian.app.LockConfirmActivity::class.java))
             },
             onStopSession = { viewModel.stopSession() },
             onRetarget = { mode, display -> viewModel.retarget(mode, display) },
+        )
+    }
+
+    showLogsFor?.let { de ->
+        val context = androidx.compose.ui.platform.LocalContext.current
+        LogPickerDialog(
+            de = de,
+            onDismiss = { showLogsFor = null },
+            onPick = { file ->
+                showLogsFor = null
+                context.startActivity(com.xiaoian.app.LogViewerActivity.intent(context, file.path))
+            },
         )
     }
 
@@ -385,6 +401,7 @@ fun InstalledEnvironmentCard(
     retargeting: Boolean,
     retargetError: String?,
     onUninstall: () -> Unit,
+    onShowLogs: () -> Unit,
     onOpenDesktop: () -> Unit,
     onLockPhone: () -> Unit,
     onStopSession: () -> Unit,
@@ -411,16 +428,25 @@ fun InstalledEnvironmentCard(
                     fontWeight = FontWeight.Bold
                 )
 
-                if (info?.installed == true && sessionState is SessionState.Idle) {
-                    IconButton(
-                        onClick = onUninstall,
-                        enabled = !uninstallInProgress && !loading
-                    ) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Delete",
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                if (info?.installed == true) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        if (sessionState is SessionState.Idle) {
+                            IconButton(
+                                onClick = onUninstall,
+                                enabled = !uninstallInProgress && !loading
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        // Also while a session runs: that is when its log is
+                        // most worth reading.
+                        IconButton(onClick = onShowLogs) {
+                            Icon(Icons.Outlined.Description, contentDescription = "Logs")
+                        }
                     }
                 }
             }
