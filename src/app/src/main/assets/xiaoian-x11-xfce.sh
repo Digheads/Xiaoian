@@ -227,22 +227,48 @@ display_exists() {
 }
 
 # ---- phone state (virtual lock, mirror resize) -----------------------
+# The touchscreen's kernel switch, for the virtual lock. This phone's is
+# fts_ts; on anything else, take whichever input device reports multi-touch
+# positions. There used to be a blind fallback to input5, which on another
+# phone could just as easily be gpio-keys -- inhibiting that would take the
+# power button away too, leaving no way to unlock.
 find_touch_inhibit() {
-    local d
+    local d cur line p
     for d in /sys/class/input/input*; do
         [ -f "$d/inhibited" ] || continue
         if [ "$(cat "$d/name" 2>/dev/null)" = "fts_ts" ]; then
             echo "$d/inhibited"; return 0
         fi
     done
-    [ -f /sys/class/input/input5/inhibited ] && \
-        echo "/sys/class/input/input5/inhibited" && return 0
+    # A heredoc, not a pipe: a pipeline's loop runs in a subshell, where the
+    # answer would be lost. `inhibited` itself is a 5.11 kernel feature, so
+    # older phones simply have no match and the lock skips the touch part.
+    cur=""
+    while IFS= read -r line; do
+        case "$line" in
+            "add device "*) cur="${line##*: }" ;;
+            *ABS_MT_POSITION_X*)
+                [ -n "$cur" ] || continue
+                p="/sys/class/input/${cur##*/}/device/inhibited"
+                if [ -f "$p" ]; then
+                    echo "$p"; return 0
+                fi
+                ;;
+        esac
+    done << TOUCH_EOF
+$(getevent -lp 2>/dev/null)
+TOUCH_EOF
     return 1
 }
 
+# Panel brightness. /sys/class/backlight is the standard place; MediaTek
+# phones tend to expose it as an LED instead.
 find_backlight() {
     local d
     for d in /sys/class/backlight/*/; do
+        [ -f "${d}brightness" ] && echo "${d}brightness" && return 0
+    done
+    for d in /sys/class/leds/lcd-backlight/ /sys/class/leds/*backlight*/; do
         [ -f "${d}brightness" ] && echo "${d}brightness" && return 0
     done
     return 1
@@ -1146,8 +1172,20 @@ do_start() {
         CUR_RESIZE=$(settings get global force_resizable_activities 2>/dev/null)
         [ "$CUR_FREEFORM" = "null" ] && CUR_FREEFORM=0
         [ "$CUR_DESKTOP"  = "null" ] && CUR_DESKTOP=0
-        [ "$CUR_NONRESIZE" = "null" ] && CUR_NONRESIZE=0
         [ "$CUR_RESIZE"   = "null" ] && CUR_RESIZE=0
+
+        # enable_non_resizable_multi_window only exists from Android 12 on.
+        # Where it does not, leave it out of the comparison entirely rather
+        # than treat "null" as 0 and ask for a reboot that cannot help.
+        HAVE_NONRESIZE=1
+        if [ "$CUR_NONRESIZE" = "null" ] || [ -z "$CUR_NONRESIZE" ]; then
+            if [ "$(getprop ro.build.version.sdk 2>/dev/null)" -lt 31 ] 2>/dev/null; then
+                HAVE_NONRESIZE=0
+                CUR_NONRESIZE="n/a"; WANT_NONRESIZE="n/a"
+            else
+                CUR_NONRESIZE=0
+            fi
+        fi
 
         echo "[*] Mode: $MODE"
         echo "[*] Current global settings:"
@@ -1165,7 +1203,8 @@ do_start() {
             echo "[*] Applying new global settings for $MODE mode..."
             settings put global enable_freeform_support "$WANT_FREEFORM"
             settings put global force_desktop_mode_on_external_displays "$WANT_DESKTOP"
-            settings put global enable_non_resizable_multi_window "$WANT_NONRESIZE"
+            [ "$HAVE_NONRESIZE" = 1 ] && \
+                settings put global enable_non_resizable_multi_window "$WANT_NONRESIZE"
             settings put global force_resizable_activities "$WANT_RESIZE"
 
             echo ""
@@ -1646,7 +1685,11 @@ export NO_AT_BRIDGE=1
 mkdir -p /var/lib/dbus
 [ -s /var/lib/dbus/machine-id ] || dbus-uuidgen --ensure > /var/lib/dbus/machine-id 2>/dev/null
 
-if [ -f /usr/share/vulkan/icd.d/freedreno_icd.aarch64.json ]; then
+# The Freedreno/Turnip driver is installed on every device, so its presence
+# says nothing; what decides is whether this phone has an Adreno GPU to point
+# it at. Without /dev/kgsl-3d0 the Mesa loader would pick a driver that cannot
+# talk to the hardware, and GL apps die instead of falling back.
+if [ -e /dev/kgsl-3d0 ] && [ -f /usr/share/vulkan/icd.d/freedreno_icd.aarch64.json ]; then
     echo "[*] Freedreno/Turnip Vulkan driver detected. Activating native Zink acceleration!"
     export GALLIUM_DRIVER=zink
     export MESA_LOADER_DRIVER_OVERRIDE=zink
@@ -1654,7 +1697,11 @@ if [ -f /usr/share/vulkan/icd.d/freedreno_icd.aarch64.json ]; then
     export ZINK_DESCRIPTORS=lazy
     export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
 else
-    echo "[*] Freedreno not found. Falling back to safe software rendering (llvmpipe)."
+    if [ -e /dev/kgsl-3d0 ]; then
+        echo "[*] Freedreno driver not installed. Falling back to software rendering (llvmpipe)."
+    else
+        echo "[*] No Adreno GPU (/dev/kgsl-3d0). Falling back to software rendering (llvmpipe)."
+    fi
     export LIBGL_ALWAYS_SOFTWARE=1
     export GALLIUM_DRIVER=llvmpipe
     export GSK_RENDERER=cairo
@@ -1831,8 +1878,20 @@ do_retarget() {
         CUR_RESIZE=$(settings get global force_resizable_activities 2>/dev/null)
         [ "$CUR_FREEFORM" = "null" ] && CUR_FREEFORM=0
         [ "$CUR_DESKTOP"  = "null" ] && CUR_DESKTOP=0
-        [ "$CUR_NONRESIZE" = "null" ] && CUR_NONRESIZE=0
         [ "$CUR_RESIZE"   = "null" ] && CUR_RESIZE=0
+
+        # enable_non_resizable_multi_window only exists from Android 12 on.
+        # Where it does not, leave it out of the comparison entirely rather
+        # than treat "null" as 0 and ask for a reboot that cannot help.
+        HAVE_NONRESIZE=1
+        if [ "$CUR_NONRESIZE" = "null" ] || [ -z "$CUR_NONRESIZE" ]; then
+            if [ "$(getprop ro.build.version.sdk 2>/dev/null)" -lt 31 ] 2>/dev/null; then
+                HAVE_NONRESIZE=0
+                CUR_NONRESIZE="n/a"; WANT_NONRESIZE="n/a"
+            else
+                CUR_NONRESIZE=0
+            fi
+        fi
 
         if [ "$CUR_FREEFORM" != "$WANT_FREEFORM" ] \
            || [ "$CUR_DESKTOP" != "$WANT_DESKTOP" ] \

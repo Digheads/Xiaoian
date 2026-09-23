@@ -632,6 +632,31 @@ left would keep the mounts busy and fail the stop.
 
 ---
 
+## What the scripts assume about the hardware
+
+Four places in both scripts look at what the phone actually is, rather than
+what the test phone happens to be:
+
+- **The touchscreen**, for the virtual lock. `find_touch_inhibit` takes the
+  device named `fts_ts` (this phone's), and otherwise the one `getevent -lp`
+  says reports `ABS_MT_POSITION_X`. It used to fall back to a hardcoded
+  `/sys/class/input/input5`, which on this phone is right by luck — `input3` is
+  `gpio-keys`, and inhibiting that would disable the power button too, leaving
+  the lock with no way out. Without a match the lock still runs, minus the
+  touch part: `inhibited` is a 5.11 kernel feature.
+- **The backlight**: `/sys/class/backlight/*/brightness`, then
+  `/sys/class/leds/*backlight*/brightness`, which is where MediaTek puts it.
+- **The GPU**: both scripts gate the Freedreno/Turnip environment on
+  `/dev/kgsl-3d0`. The driver tarball is installed on every device, so its
+  presence proves nothing. Without an Adreno, XFCE says so and runs llvmpipe,
+  and KDE warns that it is not supported — Mesa's Mali drivers want the
+  mainline kernel driver, which no stock Android phone ships.
+- **`enable_non_resizable_multi_window`** only exists from Android 12. Below
+  that it is left out of the comparison instead of being read as 0, which
+  would have asked for a reboot that could not change anything.
+
+---
+
 ## Things that are not what they look like
 
 - **`plan/`** is a set of early design notes. Parts are superseded and at least
