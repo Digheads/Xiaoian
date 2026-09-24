@@ -340,23 +340,13 @@ class TerminalActivity : ComponentActivity() {
         dialog.show()
 
         val ok = try {
-            val installed = bootstrap.installBootstrap { message, progress ->
+            // Waits if a desktop start is already installing it.
+            bootstrap.ensureInstalled { message, progress ->
                 runOnUiThread {
                     status.text = message
                     bar.progress = (progress * 1000).toInt().coerceIn(0, 1000)
                 }
             }
-            if (installed) {
-                // Not fatal: the shell works without them, they are just the
-                // tools most likely to be wanted first.
-                bootstrap.installPackages(listOf("wget", "tar", "xz-utils")) { message, progress ->
-                    runOnUiThread {
-                        status.text = message
-                        bar.progress = (progress * 1000).toInt().coerceIn(0, 1000)
-                    }
-                }
-            }
-            installed
         } finally {
             dialog.dismiss()
         }
