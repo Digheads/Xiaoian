@@ -61,6 +61,10 @@
             android:name=".DeviceInfoActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".LogViewerActivity"
+            android:exported="false" />
+
         <!-- The phone as touchpad and keyboard for an extend-mode desktop. Its
              own task, so opening it does not bring the dashboard along; it
              handles the keyboard insets itself (adjustResize + edge-to-edge). -->
