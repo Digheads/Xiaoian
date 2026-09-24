@@ -69,6 +69,13 @@ class SessionNotificationController(private val context: Context) {
         )
         builder.setContentIntent(contentPending)
 
+        // The actions belong to a running session. While it is starting there
+        // is nothing to open preferences for yet, and Stop would run the
+        // script's teardown under the start script, which is still installing
+        // and mounting in the same chroot -- the dashboard offers no Stop
+        // there either. While stopping they would do nothing.
+        val running = state as? SessionState.Running ?: return builder.build()
+
         val stopPending = PendingIntent.getService(
             context, 1,
             Intent(context, XiaoianService::class.java).apply { action = XiaoianService.ACTION_STOP },
@@ -76,8 +83,7 @@ class SessionNotificationController(private val context: Context) {
         )
         builder.addAction(0, "Stop", stopPending)
 
-        val running = state as? SessionState.Running
-        if (running != null && mode != DisplayMode.LOCAL) {
+        if (mode != DisplayMode.LOCAL) {
             val isLocked = running.isLocked
             // Locking asks first (LockConfirmActivity); only that dialog
             // sends ACTION_LOCK.

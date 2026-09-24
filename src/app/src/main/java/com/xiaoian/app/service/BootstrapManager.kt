@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import com.xiaoian.app.shell.RootShell
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.tukaani.xz.XZInputStream
 import java.io.BufferedInputStream
@@ -20,6 +22,24 @@ class BootstrapManager(private val context: Context) {
         const val TARBALL_NAME = "rootfs-arm64.tar.xz"
         /** Anything smaller than this is a truncated or failed download. */
         private const val MIN_TARBALL_BYTES = 10_000_000L
+
+        /**
+         * Installed into the tool rootfs with it. Not essential -- the shell
+         * works without them -- they are just the tools most likely to be
+         * wanted first.
+         */
+        private val TOOL_PACKAGES = listOf("wget", "tar", "xz-utils")
+
+        /**
+         * One download or install at a time, process-wide. A desktop start and
+         * a Xiaoian terminal both set up the tool rootfs when it is missing,
+         * each with its own instance of this class, and on a fresh install
+         * both happen at once: two downloads into the same `.part` file, one
+         * deleting the other's half-written file, one extracting from the
+         * `.tar` the other has just deleted. Whoever waits re-checks under the
+         * lock and finds the work done.
+         */
+        private val setupLock = Mutex()
     }
 
     val prefixDir: File
@@ -53,6 +73,30 @@ class BootstrapManager(private val context: Context) {
      * Returns false if the download failed.
      */
     suspend fun ensureRootfsTarball(onProgress: (String, Float) -> Unit): Boolean =
+        withSetupLock(onProgress) { fetchRootfsTarball(onProgress) }
+
+    /**
+     * Makes sure the tool rootfs is installed, with [TOOL_PACKAGES], installing
+     * it if it is not. Returns whether it is installed afterwards; a failed
+     * package install does not count against it.
+     */
+    suspend fun ensureInstalled(onProgress: (String, Float) -> Unit): Boolean =
+        withSetupLock(onProgress) {
+            // Whoever held the lock before may just have installed it.
+            if (isInstalled()) return@withSetupLock true
+            val installed = installBootstrap(onProgress)
+            if (installed) installPackages(TOOL_PACKAGES, onProgress)
+            installed
+        }
+
+    private suspend fun <T> withSetupLock(onProgress: (String, Float) -> Unit, block: suspend () -> T): T =
+        withContext(Dispatchers.IO) {
+            if (setupLock.isLocked) onProgress("Waiting for the Debian download already in progress...", 0.0f)
+            setupLock.withLock { block() }
+        }
+
+    /** [ensureRootfsTarball] without the lock; only call it holding [setupLock]. */
+    private suspend fun fetchRootfsTarball(onProgress: (String, Float) -> Unit): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val dest = rootfsTarball
@@ -112,7 +156,8 @@ class BootstrapManager(private val context: Context) {
             }
         }
 
-    suspend fun installBootstrap(onProgress: (String, Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
+    /** Only call holding [setupLock], via [ensureInstalled]. */
+    private suspend fun installBootstrap(onProgress: (String, Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
         try {
             val prefix = prefixDir.absolutePath
 
@@ -133,7 +178,7 @@ class BootstrapManager(private val context: Context) {
             onProgress("Creating rootfs directory...", 0.05f)
             runSuCommand("mkdir -p $prefix")
 
-            if (!ensureRootfsTarball(onProgress)) return@withContext false
+            if (!fetchRootfsTarball(onProgress)) return@withContext false
             val tarballFile = rootfsTarball
 
             // Android's native tar has no xz support, so decompress .tar.xz -> .tar in Java first.
@@ -352,7 +397,8 @@ class BootstrapManager(private val context: Context) {
         return output.toString().trim()
     }
 
-    suspend fun installPackages(packages: List<String>, onProgress: (String, Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
+    /** Only call holding [setupLock], via [ensureInstalled]. */
+    private suspend fun installPackages(packages: List<String>, onProgress: (String, Float) -> Unit): Boolean = withContext(Dispatchers.IO) {
         if (packages.isEmpty()) return@withContext true
 
         val prefix = prefixDir.absolutePath

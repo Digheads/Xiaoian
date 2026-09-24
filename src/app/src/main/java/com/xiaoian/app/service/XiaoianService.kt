@@ -150,20 +150,12 @@ class XiaoianService : LifecycleService() {
                 val bootstrapManager = BootstrapManager(this@XiaoianService)
                 if (!bootstrapManager.isInstalled()) {
                     setupTracker.onMessage(ScriptMessage.StepStarted("Downloading bootstrap"), SystemClock.elapsedRealtime())
-                    val success = bootstrapManager.installBootstrap { msg, progress ->
+                    val installed = bootstrapManager.ensureInstalled { msg, progress ->
                         updateNotification("Bootstrap: $msg")
                         setupTracker.onMessage(ScriptMessage.AptProgress(progress * 100f, msg), SystemClock.elapsedRealtime())
                         sessionManager.updateSetup(setupTracker.progress)
                     }
-                    if (success) {
-                        val packages = listOf("wget", "tar", "xz-utils")
-                        bootstrapManager.installPackages(packages) { msg, progress ->
-                            updateNotification("Package: $msg")
-                            setupTracker.onMessage(ScriptMessage.AptProgress(progress * 100f, msg), SystemClock.elapsedRealtime())
-                            sessionManager.updateSetup(setupTracker.progress)
-                        }
-                    }
-                    if (!bootstrapManager.isInstalled()) {
+                    if (!installed) {
                         Log.w(TAG, "Tool rootfs install failed; the in-app terminal will not work, continuing with the session")
                     }
                     setupTracker.onMessage(ScriptMessage.StepDone("Downloading bootstrap"), SystemClock.elapsedRealtime())
