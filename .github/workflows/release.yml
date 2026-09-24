@@ -1,8 +1,10 @@
 # Builds a complete Xiaoian release: the signed APK and the chroot's Mesa
 # driver package, published together on a v* tag.
 #
-#   push a tag v*        -> both builds, then a GitHub release with both files
-#   Run workflow (manual) -> both builds as artifacts, no release
+#   push a tag v*                  -> both builds, then a GitHub release
+#   Run workflow, with a tag        -> the same; the tag is created on the
+#                                      commit the run is started from
+#   Run workflow, tag left empty    -> both builds as artifacts, no release
 #
 # Signing uses the repository secrets KEYSTORE_BASE64, KEYSTORE_PASSWORD,
 # KEY_ALIAS and KEY_PASSWORD (see README). Without them the APK is unsigned.
@@ -13,6 +15,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.0 or v0.2.0-alpha). Empty: trial run, no release.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -86,6 +93,21 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      # A manual release: tag the commit here, before the build, so that
+      # versionName (git describe) is the tag and not the bare hash. Only
+      # local; the release job publishes it. An existing tag stops the run
+      # instead of overwriting a release.
+      - name: Tag
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Tag must look like v0.2.0 or v0.2.0-alpha, got '$TAG'"; exit 1 ;;
+          esac
+          git tag "$TAG" || { echo "::error::Tag $TAG already exists"; exit 1; }
+
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -104,7 +126,7 @@ jobs:
       # bison is xkbcomp's parser generator (tools/winflexbison on Windows).
       - name: Install CMake, Ninja and bison
         run: |
-          sudo apt-get install -y --no-install-recommends ninja-build bison
+          sudo apt-get install -y --no-install-recommends ninja-build bison ccache
           curl -fsSL https://github.com/Kitware/CMake/releases/download/v4.3.4/cmake-4.3.4-linux-x86_64.tar.gz \
             | tar -xz -C "$RUNNER_TEMP"
           CMAKE_DIR="$RUNNER_TEMP/cmake-4.3.4-linux-x86_64"
@@ -130,11 +152,45 @@ jobs:
             echo "keyPassword=$KEY_PASSWORD"
           } > src/keystore.properties
 
+      # The native code (above all the X server with its 16 source trees) is
+      # what takes the time: a local build is incremental, but every run here
+      # starts from an empty machine. Caching the .cxx directories would not
+      # help -- after a fresh checkout every source is newer than its object
+      # and ninja rebuilds all of it -- so ccache, which goes by content.
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: apk-ccache-${{ github.run_id }}
+          restore-keys: apk-ccache-
+
       # gradlew is committed without the exec bit; chmod would show up as a
       # change and put "-dirty" into versionName.
+      #
+      # CMake takes CMAKE_<LANG>_COMPILER_LAUNCHER from the environment, so
+      # the build files need no ccache setting. The compiler is identified by
+      # its --version: NDK 26.3 is reinstalled on every run, and ccache's
+      # default (the binary's mtime) would then miss every time.
       - name: Build
         working-directory: src
-        run: bash ./gradlew :app:assembleRelease
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 1G
+          CCACHE_COMPILERCHECK: '%compiler% --version'
+          CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime
+        run: |
+          ccache --zero-stats
+          bash ./gradlew :app:assembleRelease
+          ccache --show-stats
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: apk-ccache-${{ github.run_id }}
 
       - name: Collect APK
         run: |
@@ -155,7 +211,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     needs: [mesa, apk]
     runs-on: ubuntu-24.04
     steps:
@@ -174,8 +230,13 @@ jobs:
       # A tag with a suffix (v0.2.0-alpha) is a pre-release. The scripts still
       # find its Mesa package: fetch_asset falls back from releases/latest,
       # which skips pre-releases, to the full release list.
+      # On a manual run the tag does not exist on GitHub yet; the action
+      # creates it on the commit that was built. Tags made with the workflow's
+      # own token do not trigger workflows, so this does not start a second run.
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true

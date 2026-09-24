@@ -317,43 +317,6 @@ number of commits, `versionName` the nearest tag without its `v` (`0.2.0`, or
 
 ---
 
-## Publishing a release
-
-Releases are built by GitHub Actions ([release.yml](.github/workflows/release.yml)),
-on GitHub's runners:
-
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-This builds the signed APK and the Mesa driver package for the chroot, and
-publishes both in one GitHub release. A tag with a suffix (`v0.2.0-alpha`)
-becomes a pre-release. **Actions → Release → Run workflow** does the same
-builds without publishing, for a trial run; the files are then under the
-run's artifacts.
-
-For a signed APK the workflow needs the same key as local builds, as four
-repository secrets (**Settings → Secrets and variables → Actions**):
-
-| Secret | Value |
-|---|---|
-| `KEYSTORE_BASE64` | the keystore, base64-encoded: `base64 -w0 src/xiaoian-release.jks` |
-| `KEYSTORE_PASSWORD` | `storePassword` from `src/keystore.properties` |
-| `KEY_ALIAS` | `keyAlias` |
-| `KEY_PASSWORD` | `keyPassword` |
-
-The key must be the one the installed app was signed with, or the new APK
-will not install as an update. Without the secrets the workflow still runs and
-the APK comes out unsigned.
-
-The Mesa package is the GPU driver the desktops install into the chroot. The
-scripts download it from the latest release of this repository, so every
-release has to carry one; the workflow takes care of that, and only rebuilds
-it when [mesa/](mesa/) changes.
-
----
-
 ## Licence
 
 GPLv3. See [LICENCE](LICENCE). The app contains code from
