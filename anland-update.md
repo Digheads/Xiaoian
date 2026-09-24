@@ -79,6 +79,28 @@ Because we are using a Library module, the `BuildConfig.COMPATIBLE` and `BuildCo
 - In `MainActivity.java`, change all `BuildConfig.COMPATIBLE` references to `false`.
 - In `SettingsActivity.java`, replace the `BuildConfig.VERSION_NAME` line with a hardcoded version string (e.g., `"5.13.3"`).
 
-## 5. Verification
+## 5. Update the chroot side to the same version
+
+The frontend is only half of Anland. Three more pieces run inside the Debian
+chroot, and they have to come from the **same release** as the frontend: the
+helper and the frontend talk to each other, and the helper starts the KWin
+backend. None of them is fetched from upstream at run time.
+
+| Piece | Where it lives here | How to update it |
+|---|---|---|
+| `startplasma-anland.sh` (Plasma start helper) | `src/app/src/main/assets/`, shipped in the APK | Replace it with `scripts/startplasma-anland.sh` from the new release's tag |
+| KWin with the Anland backend (`kwin_<tag>.zip`) | built by CI from `Digheads/kwin`, attached to every Xiaoian release | Set `KWIN_TAG` in `anland-chroot/version.txt` to the new release's Debian tag (`anland-X.Y-debian-…`) |
+| XWayland (`xwayland_…_arm64.deb`) | built by CI from `Digheads/xwayland`, attached to every Xiaoian release | Set `XWAYLAND_TAG` the same way |
+
+First sync the forks (`Digheads/anland-termux`, `Digheads/kwin`,
+`Digheads/xwayland`) with upstream, tags included, so the new tags exist
+there. Changing `anland-chroot/version.txt` makes the next release rebuild both
+packages.
+
+If a file name changes, check the patterns in `xiaoian-wayland-kde.sh`
+(`fetch_asset "$ANLAND_REPO" ...`). The XWayland one names an exact version on
+purpose: it has to be the build made for Debian trixie.
+
+## 6. Verification
 
 Run `Clean Project` and `Rebuild Project` in Android Studio. If the build is successful, the Xiaoian app will use the updated Anland engine and its native AAudio system for the KDE environment on the next launch!

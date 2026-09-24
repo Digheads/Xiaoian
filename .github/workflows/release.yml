@@ -1,5 +1,6 @@
-# Builds a complete Xiaoian release: the signed APK and the chroot's Mesa
-# driver package, published together on a v* tag.
+# Builds a complete Xiaoian release: the signed APK, the chroot's Mesa driver
+# package and Anland's chroot components, published together on a v* tag.
+# The scripts on the phone download the chroot files from these releases.
 #
 #   push a tag v*                  -> both builds, then a GitHub release
 #   Run workflow, with a tag        -> the same; the tag is created on the
@@ -80,6 +81,66 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: mesa
+          path: out/*
+          if-no-files-found: error
+
+  # Anland's KWin backend and XWayland for the chroot, built as Debian
+  # packages from our forks (anland-chroot/). Same shape as the Mesa job:
+  # the finished packages are cached under the hash of anland-chroot/, so
+  # they are only rebuilt when a pin or the build changes.
+  anland:
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:trixie
+    strategy:
+      matrix:
+        component: [kwin, xwayland]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore packages
+        id: pkg
+        uses: actions/cache/restore@v6
+        with:
+          path: out
+          key: ${{ matrix.component }}-pkg-${{ hashFiles('anland-chroot/**') }}
+
+      - name: Install build dependencies
+        if: steps.pkg.outputs.cache-hit != 'true'
+        run: bash anland-chroot/build.sh deps ${{ matrix.component }}
+
+      - name: Restore ccache
+        if: steps.pkg.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: /root/.ccache
+          key: ${{ matrix.component }}-ccache-${{ github.run_id }}
+          restore-keys: ${{ matrix.component }}-ccache-
+
+      - name: Build
+        if: steps.pkg.outputs.cache-hit != 'true'
+        env:
+          CCACHE_DIR: /root/.ccache
+          CCACHE_MAXSIZE: 2G
+        run: bash anland-chroot/build.sh build ${{ matrix.component }} out
+
+      - name: Save ccache
+        if: always() && steps.pkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: /root/.ccache
+          key: ${{ matrix.component }}-ccache-${{ github.run_id }}
+
+      - name: Save packages
+        if: steps.pkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: out
+          key: ${{ matrix.component }}-pkg-${{ hashFiles('anland-chroot/**') }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.component }}
           path: out/*
           if-no-files-found: error
 
@@ -212,7 +273,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
-    needs: [mesa, apk]
+    needs: [mesa, anland, apk]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8

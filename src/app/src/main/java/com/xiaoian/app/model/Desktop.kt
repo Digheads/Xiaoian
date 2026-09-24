@@ -12,8 +12,16 @@ enum class Desktop(
     val infraRoot: String,
     /** File name of the start script, as bundled in the APK assets. */
     val scriptName: String,
+    /**
+     * Further APK assets the script expects beside itself in [infraRoot].
+     * KDE's is Anland's Plasma start helper, pinned to the version the
+     * vendored Anland frontend was taken from (see anland-update.md) instead
+     * of being fetched from upstream's main branch at run time.
+     */
+    val extraAssets: List<String> = emptyList(),
 ) {
-    KDE("kde", "/data/local/xiaoian-wayland-kde", "xiaoian-wayland-kde.sh"),
+    KDE("kde", "/data/local/xiaoian-wayland-kde", "xiaoian-wayland-kde.sh",
+        listOf("startplasma-anland.sh")),
     XFCE("xfce", "/data/local/xiaoian-x11-xfce", "xiaoian-x11-xfce.sh");
 
     /** Short uppercase label, e.g. "KDE". */

@@ -1,0 +1,22 @@
+# Anland's chroot-side components, built from source by CI
+# (anland-chroot/build.sh, the `anland` job of .github/workflows/release.yml)
+# and attached to every Xiaoian release, where the KDE script downloads them:
+#
+#   kwin      the KWin build with Anland's backend: kwin_<tag>.zip, holding the
+#             five .deb packages (kwin-common, kwin-data, kwin-wayland,
+#             kwin-x11, libkwin6)
+#   xwayland  the XWayland build it needs: xwayland_<version>_arm64.deb
+#
+# Both repos are Debian packaging (debian/), built with gbp buildpackage in a
+# debian:trixie container, like upstream's own CI does. They stay .deb so that
+# apt treats them as newer than Debian's own kwin and xwayland and never puts
+# those back over them.
+#
+# The tags have to be from the same Anland release as the frontend in
+# src/anland and the helper in src/app/src/main/assets/startplasma-anland.sh;
+# anland-update.md says what to change together. The repos are our forks of
+# lfdevs/kwin and lfdevs/xwayland, with all branches and tags.
+KWIN_REPO=https://github.com/Digheads/kwin.git
+KWIN_TAG=anland-5.13-debian-4_6.3.6-95
+XWAYLAND_REPO=https://github.com/Digheads/xwayland.git
+XWAYLAND_TAG=anland-5.13-debian-2_24.1.6-91

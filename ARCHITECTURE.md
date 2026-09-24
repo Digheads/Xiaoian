@@ -50,7 +50,8 @@ and the frontends talk over sockets and binders that the scripts set up.
 ├── terminal-update.md        how to re-vendor the Termux terminal
 ├── original/                 the standalone Termux scripts + their README
 ├── mesa/                     the chroot's GPU driver: pinned source + build script
-├── .github/workflows/        release.yml: APK + Mesa package, built and published together
+├── anland-chroot/            Anland's KWin backend + XWayland for the chroot: pinned source + build script
+├── .github/workflows/        release.yml: APK + chroot files, built and published together
 └── src/                      everything Gradle
     ├── settings.gradle.kts   :app :lorie :anland :terminal :shell-loader:stub
     ├── app/                  the application
@@ -684,7 +685,9 @@ tree, not `.deb` packages. It is built by the `mesa` job of
   driver has no KGSL backend — `src/freedreno/drm/` has only `msm` and
   `virtio`. The pin is the commit lfdevs' own `mesa-26.3.0-devel-20260824`
   release came from, so the package matches what the scripts downloaded
-  before.
+  before. It is fetched from our fork (`Digheads/mesa-for-android-container`,
+  all branches — the commit is on `dev/adreno-main`), so a rebuild does not
+  need upstream.
 - **It is only rebuilt when `mesa/` changes.** The finished tarball is cached
   under the hash of that directory; a release that does not touch it reuses
   the package in seconds. Its name carries the Mesa version and the pinned
@@ -693,8 +696,30 @@ tree, not `.deb` packages. It is built by the `mesa` job of
   out-of-tree `mali_kbase` patches, one set per GPU generation, and none of it
   can be tested without a Mali phone.
 
-The scripts still accept lfdevs' old file name, so a phone with only that one
-cached keeps working offline until it can download the new one.
+### Anland's chroot side
+
+KDE needs three things from Anland inside the chroot besides the frontend in
+`src/anland`: the KWin backend (`kwin_anland-….zip`), the XWayland build that
+goes with it (`xwayland_…_arm64.deb`), and the Plasma start helper
+(`startplasma-anland.sh`). All three must be from the same Anland release as
+the frontend ([anland-update.md](anland-update.md)), and none is fetched from
+upstream at run time:
+
+- **The helper ships in the APK** (`src/app/src/main/assets/`). `Desktop.KDE`
+  lists it in `extraAssets`, and the app copies it beside the script before
+  every start. It used to be downloaded daily from upstream's `main` branch —
+  whatever had just been pushed there then ran as root in the chroot.
+- **The KWin backend and XWayland are built from source and attached to every
+  release**, by the `anland` job of [release.yml](.github/workflows/release.yml)
+  with `anland-chroot/build.sh`. `version.txt` pins a tag in each of our forks
+  (`Digheads/kwin`, `Digheads/xwayland`), which are Debian packaging repos;
+  the build is upstream's own recipe, `gbp buildpackage` in a `debian:trixie`
+  container. Like the Mesa package, the result is cached under the hash of
+  `anland-chroot/` and only rebuilt when that changes.
+- **They stay `.deb` packages**, unlike Mesa's plain tree. Their versions
+  (`6.3.6-95`, `24.1.6-91`) are above Debian's, so apt never puts Debian's own
+  `kwin` or `xwayland` back over them; a copied binary would be silently
+  replaced by the next Debian update of the package it overwrote.
 
 ---
 

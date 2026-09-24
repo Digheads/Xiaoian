@@ -35,15 +35,17 @@ INSTALLER_DIR="$APP_DATA_DIR/files/downloads"
 # Update checks against GitHub happen at most this often (seconds).
 UPDATE_CHECK_INTERVAL=86400
 
-ANLAND_REPO="lfdevs/anland-termux"
+# Anland's chroot-side components -- the KWin backend and the XWayland it
+# needs -- are built from source by CI (anland-chroot/) and published with
+# every app release, like the Mesa package below. The Plasma start helper
+# comes in the APK and is put beside this script by the app. Nothing comes
+# from upstream (lfdevs/anland-termux) at run time.
+ANLAND_REPO="Digheads/Xiaoian"
 # The Mesa driver package is our own build (mesa/ and
-# .github/workflows/release.yml), published with every app release. The
-# pattern still accepts lfdevs' old file name so that a phone with only that
-# one cached keeps working offline; the first successful download replaces it.
+# .github/workflows/release.yml), published with every app release.
 MESA_REPO="Digheads/Xiaoian"
-MESA_ASSET_PATTERN="(xiaoian-mesa|mesa-for-android-container)_[^/]*_debian_trixie_arm64\\.tar\\.gz"
-MESA_GLOB="*mesa*_debian_trixie_arm64.tar.gz"
-ANLAND_HELPER_URL="https://raw.githubusercontent.com/${ANLAND_REPO}/main/scripts/startplasma-anland.sh"
+MESA_ASSET_PATTERN="xiaoian-mesa_[^/]*_debian_trixie_arm64\\.tar\\.gz"
+MESA_GLOB="xiaoian-mesa_*_debian_trixie_arm64.tar.gz"
 
 ANLAND_APP_PACKAGE="com.xiaoian.app"
 
@@ -416,9 +418,7 @@ mount_all() {
         mkdir -p "$DEBIAN_ROOTFS/$m"
     done
     # /run is a fresh tmpfs per session: no stale sockets, locks or
-    # iceauth files survive. Old on-disk leftovers are removed once.
-    is_mounted run || rm -rf "$DEBIAN_ROOTFS/run/user" 2>/dev/null
-
+    # iceauth files survive.
     is_mounted proc    || mount -t proc proc "$DEBIAN_ROOTFS/proc"
     is_mounted sys     || mount -t sysfs sys "$DEBIAN_ROOTFS/sys"
     is_mounted run     || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$DEBIAN_ROOTFS/run"
@@ -738,7 +738,7 @@ SETUP_SCRIPT="$DEBIAN_ROOTFS/setup-pkgs.sh"
 
 # The app passes the display the user picked in the dashboard; both helpers
 # fall back to guessing when it did not, which is what happens with a single
-# screen or an older app build. The guess takes the first external display it
+# screen. The guess takes the first external display it
 # finds -- fine with one, arbitrary with two, which is the whole reason the
 # picker exists.
 detect_external_res() {
@@ -1335,7 +1335,7 @@ do_start() {
     check_anland_daemon || exit 1
 
     step components
-    echo "[*] Checking upstream components..."
+    echo "[*] Checking chroot components..."
     fetch_asset "$ANLAND_REPO" "xwayland_24\\.1\\.6-91_arm64\\.deb" \
         "XWayland" "xwayland_*.deb" components || exit 1
     fetch_asset "$ANLAND_REPO" "kwin_anland-[^/]*debian[^/]*\\.zip" \
@@ -1343,42 +1343,18 @@ do_start() {
     fetch_asset "$MESA_REPO" "$MESA_ASSET_PATTERN" \
         "Freedreno driver" "$MESA_GLOB" components || exit 1
 
-    # The helper is refreshed together with the other components, so it
-    # never drifts away from the KWin backend it belongs to.
-    ANLAND_HELPER_LOCAL="$INSTALLER_DIR/startplasma-anland.sh"
-    HELPER_STAMP="$INSTALLER_DIR/.checked-anland-helper"
-    if [ -s "$ANLAND_HELPER_LOCAL" ] && is_fresh "$HELPER_STAMP"; then
-        echo "[*] startplasma-anland.sh: cached, checked recently"
-    else
-        echo "[*] Checking startplasma-anland.sh..."
-        rm -f "$ANLAND_HELPER_LOCAL.part"
-        if http_get 60 "$ANLAND_HELPER_URL" "$ANLAND_HELPER_LOCAL.part" components \
-           && [ -s "$ANLAND_HELPER_LOCAL.part" ]; then
-            if [ -s "$ANLAND_HELPER_LOCAL" ] && \
-               [ "$(md5sum < "$ANLAND_HELPER_LOCAL.part")" = "$(md5sum < "$ANLAND_HELPER_LOCAL")" ]; then
-                rm -f "$ANLAND_HELPER_LOCAL.part"
-                echo "[*] startplasma-anland.sh is up to date."
-            else
-                mv -f "$ANLAND_HELPER_LOCAL.part" "$ANLAND_HELPER_LOCAL"
-                echo "[*] startplasma-anland.sh updated."
-            fi
-            touch "$HELPER_STAMP"
-        else
-            rm -f "$ANLAND_HELPER_LOCAL.part"
-            if [ -s "$ANLAND_HELPER_LOCAL" ]; then
-                echo "[!] startplasma-anland.sh check failed; using cached copy."
-            else
-                echo "[!] ERROR: Failed to download startplasma-anland.sh"
-                exit 1
-            fi
-        fi
+    # The Plasma start helper ships in the APK, at the same Anland version as
+    # the frontend and the KWin backend; the app copies it here before every
+    # start, like this script.
+    ANLAND_HELPER_LOCAL="$INFRA_ROOT/startplasma-anland.sh"
+    if [ ! -s "$ANLAND_HELPER_LOCAL" ]; then
+        echo "[!] ERROR: $ANLAND_HELPER_LOCAL is missing; the app puts it there before starting."
+        exit 1
     fi
-    chmod +x "$ANLAND_HELPER_LOCAL"
 
     XWAYLAND_DEB=""; KWIN_ZIP=""; FREEDRENO_TAR=""
     for f in "$INSTALLER_DIR"/xwayland_*.deb; do [ -f "$f" ] && XWAYLAND_DEB="$f" && break; done
     for f in "$INSTALLER_DIR"/kwin_anland-*.zip; do [ -f "$f" ] && KWIN_ZIP="$f" && break; done
-    # Newest first: during the switch from lfdevs' file name both could exist.
     FREEDRENO_TAR=$(ls -t "$INSTALLER_DIR"/$MESA_GLOB 2>/dev/null | head -1)
 
     if [ -z "$XWAYLAND_DEB" ] || [ -z "$KWIN_ZIP" ] || [ -z "$FREEDRENO_TAR" ]; then
@@ -1392,11 +1368,6 @@ do_start() {
     echo "      $(basename "$FREEDRENO_TAR") [chroot package]"
     echo "      $(basename "$ANLAND_HELPER_LOCAL")"
     step_done components
-
-    if [ -d "$DEBIAN_ROOTFS/data/data/com.termux" ]; then
-        echo "[*] Removing leftover Termux payload from chroot (old bug)..."
-        rm -rf "$DEBIAN_ROOTFS/data"
-    fi
 
     if [ -f "$DEBIAN_ROOTFS/bin/bash" ]; then
         echo "[*] Debian rootfs found. Skipping installation."
@@ -1472,23 +1443,6 @@ enable-shm = no
 enable-memfd = no
 PULSECLIENT
     chmod 644 $DEBIAN_ROOTFS/etc/pulse/client.conf
-
-    # -----------------------------------------------------------------
-    # Leftovers from the old Termux-proxy audio setup (<= 2.7.0).
-    # An /etc/pipewire/client.conf replaces the packaged default
-    # entirely, so an empty one leaves libpipewire clients (KWin's
-    # Anland backend) without the native protocol module.
-    # 99-termux-tunnel.conf loads a mandatory pulse-tunnel to the
-    # Termux socket; when that socket is absent pipewire exits.
-    # /usr/local/bin stubs (sleep-only) shadow the real daemons, so
-    # the helper never sees the pipewire-0 socket.
-    # -----------------------------------------------------------------
-    rm -f $DEBIAN_ROOTFS/etc/pipewire/client.conf \
-          $DEBIAN_ROOTFS/etc/pipewire/pipewire.conf.d/99-termux-tunnel.conf \
-          $DEBIAN_ROOTFS/usr/local/bin/pipewire \
-          $DEBIAN_ROOTFS/usr/local/bin/wireplumber \
-          $DEBIAN_ROOTFS/usr/local/bin/pipewire-pulse \
-          $DEBIAN_ROOTFS/root/.config/pulse/cookie 2>/dev/null
 
     if [ ! -f "$DEBIAN_ROOTFS/usr/bin/pm-is-supported" ]; then
         printf '#!/bin/sh\nexit 1\n' > $DEBIAN_ROOTFS/usr/bin/pm-is-supported
@@ -1732,11 +1686,8 @@ rm -f /etc/xdg/autostart/akonadi_*.desktop 2>/dev/null
 rm -f /etc/xdg/autostart/kdeconnect*.desktop 2>/dev/null
 rm -f /etc/xdg/autostart/kalendarac.desktop 2>/dev/null
 
-# Old audio stubs (<= 2.7.0) would shadow the real binaries.
-rm -f /usr/local/bin/pipewire /usr/local/bin/wireplumber /usr/local/bin/pipewire-pulse
-
 # Freedreno (KGSL) Mesa driver from staged tarball
-FREEDRENO_TAR=$(ls -t /tmp/*mesa*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
+FREEDRENO_TAR=$(ls -t /tmp/xiaoian-mesa_*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
 if [ -n "$FREEDRENO_TAR" ]; then
     echo "[*] Extracting Freedreno driver from $(basename "$FREEDRENO_TAR")..."
     rm -rf /tmp/freedreno-extract
@@ -1846,7 +1797,7 @@ apt-mark hold \
     >/dev/null 2>&1 || true
 
 rm -f /tmp/xwayland_*.deb \
-      /tmp/kwin_anland-*.zip /tmp/*mesa*_debian_trixie_arm64.tar.gz
+      /tmp/kwin_anland-*.zip /tmp/xiaoian-mesa_*_debian_trixie_arm64.tar.gz
 
 echo "[*] Debian setup complete."
 SETUP
@@ -1912,10 +1863,6 @@ SETUP
         echo "[!] Continuing anyway; KWin will likely fail to connect."
     }
     step_done anland
-
-    # Audio runs entirely inside the chroot (started by the Anland
-    # helper); stale Termux-side sockets from <= 2.7.0 are removed.
-    rm -f "$TMPDIR/pipewire-0" "$TMPDIR/pipewire-0.lock" "$TMPDIR/pulse/native" 2>/dev/null
 
     if [ "$MODE" = "mirror" ]; then
         echo "[*] Applying external size for mirror mode..."

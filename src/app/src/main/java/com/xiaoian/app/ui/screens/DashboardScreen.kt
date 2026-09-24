@@ -428,25 +428,14 @@ fun InstalledEnvironmentCard(
                     fontWeight = FontWeight.Bold
                 )
 
+                // Logs at the end of the name, delete at the end of the size
+                // line: stacked together in the first row they made the card
+                // two buttons tall around a single line of text.
+                // Also while a session runs: that is when the log is most
+                // worth reading.
                 if (info?.installed == true) {
-                    Column(horizontalAlignment = Alignment.End) {
-                        if (sessionState is SessionState.Idle) {
-                            IconButton(
-                                onClick = onUninstall,
-                                enabled = !uninstallInProgress && !loading
-                            ) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "Delete",
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                        // Also while a session runs: that is when its log is
-                        // most worth reading.
-                        IconButton(onClick = onShowLogs) {
-                            Icon(Icons.Outlined.Description, contentDescription = "Logs")
-                        }
+                    IconButton(onClick = onShowLogs) {
+                        Icon(Icons.Outlined.Description, contentDescription = "Logs")
                     }
                 }
             }
@@ -454,14 +443,31 @@ fun InstalledEnvironmentCard(
             if (loading && info == null) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
             } else if (info?.installed == true) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    // Zero until measured: a desktop installed by the running
-                    // session is only sized once it stops.
-                    if (info.sizeBytes > 0) StorageInfo.formatSize(info.sizeBytes) else "Installed",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        // Zero until measured: a desktop installed by the running
+                        // session is only sized once it stops.
+                        if (info.sizeBytes > 0) StorageInfo.formatSize(info.sizeBytes) else "Installed",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (sessionState is SessionState.Idle) {
+                        IconButton(
+                            onClick = onUninstall,
+                            enabled = !uninstallInProgress && !loading
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
             } else {
                 Text(
                     "Not installed",

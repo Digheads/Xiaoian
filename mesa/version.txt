@@ -8,5 +8,9 @@
 # This commit is the one lfdevs' own mesa-26.3.0-devel-20260824 release was
 # built from, i.e. the driver the scripts downloaded until now. Changing either
 # line changes the hash of mesa/, which is what makes CI rebuild the package.
-MESA_REPO=https://github.com/lfdevs/mesa-for-android-container.git
+#
+# Fetched from our fork of lfdevs/mesa-for-android-container (all branches:
+# the commit is on dev/adreno-main, not on the default adreno-main), so the
+# build does not depend on upstream staying online.
+MESA_REPO=https://github.com/Digheads/mesa-for-android-container.git
 MESA_COMMIT=98f3d6229d61452cef80f8563af7c56ae599dc14

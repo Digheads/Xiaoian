@@ -122,6 +122,16 @@ class XiaoianService : LifecycleService() {
                 // wrapper: ShellExecutor already runs inside an open root shell,
                 // and nesting one here would cost a second Magisk prompt.
                 shellExecutor.run("mkdir -p $infraRoot && cp ${scriptFile.absolutePath} $scriptPath && chmod +x $scriptPath")
+
+                // Files the script uses from beside itself, refreshed the same
+                // way and for the same reason as the script.
+                for (asset in de.extraAssets) {
+                    val staged = File(externalCacheDir, asset)
+                    assets.open(asset).use { input ->
+                        staged.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    shellExecutor.run("cp ${staged.absolutePath} $infraRoot/$asset")
+                }
                 
                 // The scripts write their downloaded assets here too, as root.
                 // The app has to create it first so it stays owned by the app

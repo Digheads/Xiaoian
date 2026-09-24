@@ -41,12 +41,10 @@ APP_PACKAGE="com.xiaoian.app"
 UPDATE_CHECK_INTERVAL=86400
 
 # The Mesa driver package is our own build (mesa/ and
-# .github/workflows/release.yml), published with every app release. The
-# pattern still accepts lfdevs' old file name so that a phone with only that
-# one cached keeps working offline; the first successful download replaces it.
+# .github/workflows/release.yml), published with every app release.
 MESA_REPO="Digheads/Xiaoian"
-MESA_ASSET_PATTERN="(xiaoian-mesa|mesa-for-android-container)_[^/]*_debian_trixie_arm64\\.tar\\.gz"
-MESA_GLOB="*mesa*_debian_trixie_arm64.tar.gz"
+MESA_ASSET_PATTERN="xiaoian-mesa_[^/]*_debian_trixie_arm64\\.tar\\.gz"
+MESA_GLOB="xiaoian-mesa_*_debian_trixie_arm64.tar.gz"
 
 # PulseAudio runs inside the chroot (see the session script) and listens on
 # /tmp/pulseaudio.socket, which is $TMPDIR on the host: /tmp is a bind mount
@@ -409,9 +407,7 @@ mount_all() {
         mkdir -p "$DEBIAN_ROOTFS/$m"
     done
     # /run is a fresh tmpfs per session: no stale sockets, locks or
-    # iceauth files survive. Old on-disk leftovers are removed once.
-    is_mounted run || rm -rf "$DEBIAN_ROOTFS/run/user" 2>/dev/null
-
+    # iceauth files survive.
     is_mounted proc    || mount -t proc proc "$DEBIAN_ROOTFS/proc"
     is_mounted sys     || mount -t sysfs sys "$DEBIAN_ROOTFS/sys"
     is_mounted run     || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$DEBIAN_ROOTFS/run"
@@ -731,7 +727,7 @@ SETUP_SCRIPT="$DEBIAN_ROOTFS/setup-pkgs.sh"
 
 # The app passes the display the user picked in the dashboard; both helpers
 # fall back to guessing when it did not, which is what happens with a single
-# screen or an older app build. The guess takes the first external display it
+# screen. The guess takes the first external display it
 # finds -- fine with one, arbitrary with two, which is the whole reason the
 # picker exists.
 detect_external_res() {
@@ -1249,7 +1245,6 @@ do_start() {
     fetch_asset "$MESA_REPO" "$MESA_ASSET_PATTERN" "Freedreno driver" \
         "$MESA_GLOB" driver || exit 1
 
-    # Newest first: during the switch from lfdevs' file name both could exist.
     LOCAL_MESA_TAR=$(ls -t "$INSTALLER_DIR"/$MESA_GLOB 2>/dev/null | head -1)
 
     if [ -z "$LOCAL_MESA_TAR" ]; then
@@ -1452,6 +1447,22 @@ OnlyShowIn=XFCE;
 NoDisplay=true
 XFCE_KIOSK_DESKTOP
 
+    # Debian's pulseaudio package autostarts start-pulseaudio-x11, which
+    # loads X11 integration modules into the running PulseAudio. Ours is a
+    # system-mode daemon with its own user, so module-x11-xsmp's ICE
+    # connection is rejected by xfce4-session and the load fails -- two
+    # errors in the log, and nothing these modules would do is needed here
+    # (audio goes out over the null sink and TCP). A Hidden=true entry of the
+    # same name in the user's autostart directory switches it off, and unlike
+    # deleting the system file it survives package upgrades.
+    mkdir -p "$DEBIAN_ROOTFS/root/.config/autostart"
+    cat << 'PULSE_AUTOSTART' > "$DEBIAN_ROOTFS/root/.config/autostart/pulseaudio.desktop"
+[Desktop Entry]
+Type=Application
+Name=PulseAudio Sound System
+Hidden=true
+PULSE_AUTOSTART
+
     step packages
     echo "[*] Checking Debian dependencies and GPU drivers..."
 
@@ -1493,7 +1504,7 @@ else
     echo "[*] All standard dependencies are satisfied."
 fi
 
-FREEDRENO_TAR=$(ls -t /tmp/*mesa*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
+FREEDRENO_TAR=$(ls -t /tmp/xiaoian-mesa_*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
 
 if [ -n "$FREEDRENO_TAR" ]; then
     echo "[*] Extracting Freedreno driver from $(basename "$FREEDRENO_TAR")..."
