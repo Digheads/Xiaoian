@@ -36,7 +36,13 @@ INSTALLER_DIR="$APP_DATA_DIR/files/downloads"
 UPDATE_CHECK_INTERVAL=86400
 
 ANLAND_REPO="lfdevs/anland-termux"
-MESA_REPO="lfdevs/mesa-for-android-container"
+# The Mesa driver package is our own build (mesa/ and
+# .github/workflows/release.yml), published with every app release. The
+# pattern still accepts lfdevs' old file name so that a phone with only that
+# one cached keeps working offline; the first successful download replaces it.
+MESA_REPO="Digheads/Xiaoian"
+MESA_ASSET_PATTERN="(xiaoian-mesa|mesa-for-android-container)_[^/]*_debian_trixie_arm64\\.tar\\.gz"
+MESA_GLOB="*mesa*_debian_trixie_arm64.tar.gz"
 ANLAND_HELPER_URL="https://raw.githubusercontent.com/${ANLAND_REPO}/main/scripts/startplasma-anland.sh"
 
 ANLAND_APP_PACKAGE="com.xiaoian.app"
@@ -1334,8 +1340,8 @@ do_start() {
         "XWayland" "xwayland_*.deb" components || exit 1
     fetch_asset "$ANLAND_REPO" "kwin_anland-[^/]*debian[^/]*\\.zip" \
         "KWin Anland backend" "kwin_anland-*.zip" components || exit 1
-    fetch_asset "$MESA_REPO" "mesa-for-android-container_[^/]*_debian_trixie_arm64\\.tar\\.gz" \
-        "Freedreno driver" "mesa-for-android-container*.tar.gz" components || exit 1
+    fetch_asset "$MESA_REPO" "$MESA_ASSET_PATTERN" \
+        "Freedreno driver" "$MESA_GLOB" components || exit 1
 
     # The helper is refreshed together with the other components, so it
     # never drifts away from the KWin backend it belongs to.
@@ -1372,7 +1378,8 @@ do_start() {
     XWAYLAND_DEB=""; KWIN_ZIP=""; FREEDRENO_TAR=""
     for f in "$INSTALLER_DIR"/xwayland_*.deb; do [ -f "$f" ] && XWAYLAND_DEB="$f" && break; done
     for f in "$INSTALLER_DIR"/kwin_anland-*.zip; do [ -f "$f" ] && KWIN_ZIP="$f" && break; done
-    for f in "$INSTALLER_DIR"/mesa-for-android-container*.tar.gz; do [ -f "$f" ] && FREEDRENO_TAR="$f" && break; done
+    # Newest first: during the switch from lfdevs' file name both could exist.
+    FREEDRENO_TAR=$(ls -t "$INSTALLER_DIR"/$MESA_GLOB 2>/dev/null | head -1)
 
     if [ -z "$XWAYLAND_DEB" ] || [ -z "$KWIN_ZIP" ] || [ -z "$FREEDRENO_TAR" ]; then
         echo "[!] ERROR: One or more chroot components are missing after download."
@@ -1729,7 +1736,7 @@ rm -f /etc/xdg/autostart/kalendarac.desktop 2>/dev/null
 rm -f /usr/local/bin/pipewire /usr/local/bin/wireplumber /usr/local/bin/pipewire-pulse
 
 # Freedreno (KGSL) Mesa driver from staged tarball
-FREEDRENO_TAR=$(ls /tmp/mesa-for-android-container*.tar.gz 2>/dev/null | head -1)
+FREEDRENO_TAR=$(ls -t /tmp/*mesa*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
 if [ -n "$FREEDRENO_TAR" ]; then
     echo "[*] Extracting Freedreno driver from $(basename "$FREEDRENO_TAR")..."
     rm -rf /tmp/freedreno-extract
@@ -1839,7 +1846,7 @@ apt-mark hold \
     >/dev/null 2>&1 || true
 
 rm -f /tmp/xwayland_*.deb \
-      /tmp/kwin_anland-*.zip /tmp/mesa-for-android-container*.tar.gz
+      /tmp/kwin_anland-*.zip /tmp/*mesa*_debian_trixie_arm64.tar.gz
 
 echo "[*] Debian setup complete."
 SETUP

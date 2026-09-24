@@ -49,7 +49,7 @@ with their current values, and the list below.
 |---|---|
 | **Tested** | Xiaomi Redmi Note 13 (4G) — Snapdragon 685 / Adreno 610, HyperOS 2 (Android 15) |
 | **Expected to work** | arm64 phones with a Snapdragon (Adreno) GPU, Android 11+, rooted with Magisk |
-| **Limited** | Mali, Xclipse, MediaTek and Tensor (Pixel) GPUs: XFCE only with software rendering, no KDE. Kernels before 5.11: the virtual lock cannot disable the touchscreen |
+| **Limited** | Mali, Xclipse, MediaTek and Tensor (Pixel) GPUs: XFCE only with software rendering, no KDE. The GPU driver the desktops use is Freedreno/Turnip, which only drives Adreno. Kernels before 5.11: the virtual lock cannot disable the touchscreen |
 | **Untested** | Samsung (DeX), KernelSU, APatch |
 | **Not supported** | 32-bit or x86 devices, phones without root |
 
@@ -280,7 +280,7 @@ the machine needs:
 
 | | |
 |---|---|
-| **JDK 21, Android SDK 35** | Paths in `src/gradle.properties` and `src/local.properties` |
+| **JDK 21, Android SDK 35** | The SDK path goes in `src/local.properties`. The JDK is per machine, so not in the repo: `JAVA_HOME`, Android Studio's Gradle JDK, or `org.gradle.java.home` in `~/.gradle/gradle.properties` |
 | **Two NDKs** | 26.3 for the X server, a current one for the rest |
 | **CMake and Ninja** | Either from the SDK, or any install pointed at by `cmake.dir` in `src/local.properties` |
 | **A host C compiler** | gcc, or Visual Studio on Windows: a couple of generators run on the build machine |
@@ -309,6 +309,48 @@ A release build cannot be installed over a debug build, or the other way
 round, because they are signed with different keys. Uninstall the other one
 first. This removes the app's settings, but not the installed desktops, which
 live under `/data/local`.
+
+The version comes from git, not from the build file: `versionCode` is the
+number of commits, `versionName` the nearest tag without its `v` (`0.2.0`, or
+`0.2.0-3-gabc1234` after it). Android refuses an update with a lower
+`versionCode`, and this way no release can go out with one.
+
+---
+
+## Publishing a release
+
+Releases are built by GitHub Actions ([release.yml](.github/workflows/release.yml)),
+on GitHub's runners:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+This builds the signed APK and the Mesa driver package for the chroot, and
+publishes both in one GitHub release. A tag with a suffix (`v0.2.0-alpha`)
+becomes a pre-release. **Actions → Release → Run workflow** does the same
+builds without publishing, for a trial run; the files are then under the
+run's artifacts.
+
+For a signed APK the workflow needs the same key as local builds, as four
+repository secrets (**Settings → Secrets and variables → Actions**):
+
+| Secret | Value |
+|---|---|
+| `KEYSTORE_BASE64` | the keystore, base64-encoded: `base64 -w0 src/xiaoian-release.jks` |
+| `KEYSTORE_PASSWORD` | `storePassword` from `src/keystore.properties` |
+| `KEY_ALIAS` | `keyAlias` |
+| `KEY_PASSWORD` | `keyPassword` |
+
+The key must be the one the installed app was signed with, or the new APK
+will not install as an update. Without the secrets the workflow still runs and
+the APK comes out unsigned.
+
+The Mesa package is the GPU driver the desktops install into the chroot. The
+scripts download it from the latest release of this repository, so every
+release has to carry one; the workflow takes care of that, and only rebuilds
+it when [mesa/](mesa/) changes.
 
 ---
 

@@ -6,6 +6,26 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// The version comes from git, so a release can never go out with a versionCode
+// Android refuses as a downgrade. versionCode is the commit count: it grows
+// with every commit on main and gives the same number locally and in CI.
+// versionName is the nearest tag without its "v" (0.2.0, 0.2.0-3-gabc1234, or
+// just the hash before the first tag). Outside a git checkout both fall back.
+fun git(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().ifEmpty { null }
+}.getOrNull()
+
+// A shallow clone counts only the commits it has, which would silently turn
+// every CI build into versionCode 1.
+if (git("rev-parse", "--is-shallow-repository") == "true")
+    throw GradleException("Shallow git clone: versionCode would be wrong. Fetch the full history (fetch-depth: 0).")
+
+val gitVersionCode = git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
+val gitVersionName = git("describe", "--tags", "--always", "--dirty")?.removePrefix("v") ?: "0.0.0-nogit"
+
 android {
     namespace = "com.xiaoian.app"
     compileSdk = 35
@@ -15,8 +35,8 @@ android {
         applicationId = "com.xiaoian.app"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-alpha"
+        versionCode = gitVersionCode
+        versionName = gitVersionName
 
         // arm64 only, like every native module here: the Debian rootfs and
         // the desktops are arm64, so the x86 and armeabi copies libraries

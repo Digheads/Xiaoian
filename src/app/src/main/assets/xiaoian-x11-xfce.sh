@@ -40,8 +40,13 @@ APP_PACKAGE="com.xiaoian.app"
 # Update checks against GitHub happen at most this often (seconds).
 UPDATE_CHECK_INTERVAL=86400
 
-MESA_REPO="lfdevs/mesa-for-android-container"
-MESA_ASSET_PATTERN="mesa-for-android-container_[^/]*_debian_trixie_arm64\\.tar\\.gz"
+# The Mesa driver package is our own build (mesa/ and
+# .github/workflows/release.yml), published with every app release. The
+# pattern still accepts lfdevs' old file name so that a phone with only that
+# one cached keeps working offline; the first successful download replaces it.
+MESA_REPO="Digheads/Xiaoian"
+MESA_ASSET_PATTERN="(xiaoian-mesa|mesa-for-android-container)_[^/]*_debian_trixie_arm64\\.tar\\.gz"
+MESA_GLOB="*mesa*_debian_trixie_arm64.tar.gz"
 
 # PulseAudio runs inside the chroot (see the session script) and listens on
 # /tmp/pulseaudio.socket, which is $TMPDIR on the host: /tmp is a bind mount
@@ -1242,12 +1247,10 @@ do_start() {
     echo "[*] Checking Freedreno (KGSL) Mesa driver..."
 
     fetch_asset "$MESA_REPO" "$MESA_ASSET_PATTERN" "Freedreno driver" \
-        "mesa-for-android-container*.tar.gz" driver || exit 1
+        "$MESA_GLOB" driver || exit 1
 
-    LOCAL_MESA_TAR=""
-    for f in "$INSTALLER_DIR"/mesa-for-android-container*.tar.gz; do
-        [ -f "$f" ] && LOCAL_MESA_TAR="$f" && break
-    done
+    # Newest first: during the switch from lfdevs' file name both could exist.
+    LOCAL_MESA_TAR=$(ls -t "$INSTALLER_DIR"/$MESA_GLOB 2>/dev/null | head -1)
 
     if [ -z "$LOCAL_MESA_TAR" ]; then
         echo "[!] ERROR: Freedreno driver still missing after download."
@@ -1490,10 +1493,7 @@ else
     echo "[*] All standard dependencies are satisfied."
 fi
 
-FREEDRENO_TAR=""
-for f in /tmp/mesa-for-android-container*.tar.gz; do
-    [ -f "$f" ] && FREEDRENO_TAR="$f" && break
-done
+FREEDRENO_TAR=$(ls -t /tmp/*mesa*_debian_trixie_arm64.tar.gz 2>/dev/null | head -1)
 
 if [ -n "$FREEDRENO_TAR" ]; then
     echo "[*] Extracting Freedreno driver from $(basename "$FREEDRENO_TAR")..."
@@ -1564,7 +1564,7 @@ SETUP
         else
             echo "[!] WARNING: Debian setup reported errors; it will be retried on the next start."
         fi
-        rm -f "$DEBIAN_ROOTFS/tmp/mesa-for-android-container"*.tar.gz 2>/dev/null
+        rm -f "$DEBIAN_ROOTFS"/tmp/$MESA_GLOB 2>/dev/null
     else
         echo "[*] All packages present and Freedreno driver unchanged; skipping setup."
     fi

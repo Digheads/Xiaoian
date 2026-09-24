@@ -1,0 +1,12 @@
+# Mesa source for the chroot's GPU driver package (see mesa/build.sh).
+#
+# lfdevs' fork, not upstream Mesa: upstream's gallium freedreno driver has no
+# KGSL backend (src/freedreno/drm/ holds only msm and virtio), and the KDE
+# session runs on exactly that (GALLIUM_DRIVER=freedreno, kgsl loader). Turnip
+# alone would build from upstream; KDE's GL would not.
+#
+# This commit is the one lfdevs' own mesa-26.3.0-devel-20260824 release was
+# built from, i.e. the driver the scripts downloaded until now. Changing either
+# line changes the hash of mesa/, which is what makes CI rebuild the package.
+MESA_REPO=https://github.com/lfdevs/mesa-for-android-container.git
+MESA_COMMIT=98f3d6229d61452cef80f8563af7c56ae599dc14

@@ -49,6 +49,8 @@ and the frontends talk over sockets and binders that the scripts set up.
 ├── anland-update.md          how to re-integrate a new Anland release
 ├── terminal-update.md        how to re-vendor the Termux terminal
 ├── original/                 the standalone Termux scripts + their README
+├── mesa/                     the chroot's GPU driver: pinned source + build script
+├── .github/workflows/        release.yml: APK + Mesa package, built and published together
 └── src/                      everything Gradle
     ├── settings.gradle.kts   :app :lorie :anland :terminal :shell-loader:stub
     ├── app/                  the application
@@ -83,7 +85,15 @@ cd src
 ../tools/platform-tools/adb.exe install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Java 21 (set in `src/gradle.properties`), compileSdk 35, minSdk 28, arm64 only.
+Java 21, compileSdk 35, minSdk 28, arm64 only. The JDK path is not in the repo:
+the same build runs on a Linux CI runner, where a Windows path in
+`src/gradle.properties` would stop it before it starts. Locally it comes from
+`JAVA_HOME`, Android Studio, or `~/.gradle/gradle.properties`.
+
+The version is read from git in `app/build.gradle.kts`: `versionCode` is
+`git rev-list --count HEAD`, `versionName` is `git describe --tags`. A shallow
+clone would count only what it fetched, so the build refuses one instead of
+quietly producing `versionCode` 1.
 
 ### Native code is built from source
 
@@ -650,10 +660,41 @@ what the test phone happens to be:
   `/dev/kgsl-3d0`. The driver tarball is installed on every device, so its
   presence proves nothing. Without an Adreno, XFCE says so and runs llvmpipe,
   and KDE warns that it is not supported — Mesa's Mali drivers want the
-  mainline kernel driver, which no stock Android phone ships.
+  mainline kernel driver, which no stock Android phone ships. Where the driver
+  comes from is in [The chroot's Mesa driver](#the-chroots-mesa-driver).
 - **`enable_non_resizable_multi_window`** only exists from Android 12. Below
   that it is left out of the comparison instead of being read as 0, which
   would have asked for a reboot that could not change anything.
+
+### The chroot's Mesa driver
+
+The desktops render through a Mesa build the scripts download from this
+repository's latest release and unpack over the Debian rootfs: a plain `/usr`
+tree, not `.deb` packages. It is built by the `mesa` job of
+[release.yml](.github/workflows/release.yml) from [mesa/](mesa/):
+`version.txt` pins the source, `build.sh` builds and packages it.
+
+- **It cannot be part of the Gradle build.** The NDK builds against bionic; the
+  chroot is Debian, glibc. The job runs natively on GitHub's arm64 runner in a
+  `debian:trixie` container.
+- **The source is lfdevs' fork, not upstream Mesa.** Turnip talks to KGSL
+  upstream too (`-Dfreedreno-kmds=kgsl`), which is all XFCE needs: it renders
+  through zink on Turnip. KDE runs on the *gallium* freedreno driver over KGSL
+  (`GALLIUM_DRIVER=freedreno`, the `kgsl` loader), and upstream's gallium
+  driver has no KGSL backend — `src/freedreno/drm/` has only `msm` and
+  `virtio`. The pin is the commit lfdevs' own `mesa-26.3.0-devel-20260824`
+  release came from, so the package matches what the scripts downloaded
+  before.
+- **It is only rebuilt when `mesa/` changes.** The finished tarball is cached
+  under the hash of that directory; a release that does not touch it reuses
+  the package in seconds. Its name carries the Mesa version and the pinned
+  commit but no date, so a phone that has it does not download it again.
+- **Panfrost is not in it.** On a stock Android kernel PanVK needs the
+  out-of-tree `mali_kbase` patches, one set per GPU generation, and none of it
+  can be tested without a Mali phone.
+
+The scripts still accept lfdevs' old file name, so a phone with only that one
+cached keeps working offline until it can download the new one.
 
 ---
 
