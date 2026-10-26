@@ -84,10 +84,28 @@ class BootstrapManager(private val context: Context) {
         withSetupLock(onProgress) {
             // Whoever held the lock before may just have installed it.
             if (isInstalled()) return@withSetupLock true
-            val installed = installBootstrap(onProgress)
-            if (installed) installPackages(TOOL_PACKAGES, onProgress)
-            installed
+            // Extracting and apt take minutes. On the shared shell they held
+            // its lock all that time, so every quick root query in the app --
+            // the dashboard's, the log viewer's -- waited for the install.
+            // One more su (a prompt or a toast), once, buys that back.
+            val own = RootShell.dedicated("bootstrap")
+            shell = own
+            try {
+                val installed = installBootstrap(onProgress)
+                if (installed) installPackages(TOOL_PACKAGES, onProgress)
+                installed
+            } finally {
+                shell = RootShell.shared
+                own.close()
+            }
         }
+
+    /**
+     * Where [runSuCommand] and [runSuCommandWithOutput] send their commands:
+     * the shared shell, except during [ensureInstalled]'s install.
+     */
+    @Volatile
+    private var shell: RootShell = RootShell.shared
 
     private suspend fun <T> withSetupLock(onProgress: (String, Float) -> Unit, block: suspend () -> T): T =
         withContext(Dispatchers.IO) {
@@ -369,7 +387,7 @@ class BootstrapManager(private val context: Context) {
         runSuCommand(com.xiaoian.app.terminal.SessionScripts.wipeTree(prefix), RootShell.NO_TIMEOUT)
 
     /**
-     * Runs one command in the shared root shell.
+     * Runs one command in [shell]: the shared root shell, or the install's own.
      *
      * These used to be `ProcessBuilder("su", "-c", …)` each, so installing the
      * tool rootfs alone cost a dozen Magisk prompts. The chroot `apt-get` runs
@@ -377,7 +395,7 @@ class BootstrapManager(private val context: Context) {
      */
     private fun runSuCommand(command: String, idleTimeoutMs: Long = RootShell.DEFAULT_IDLE_TIMEOUT_MS): Boolean {
         val output = StringBuilder()
-        val result = RootShell.shared.execBlocking(command, idleTimeoutMs) { line ->
+        val result = shell.execBlocking(command, idleTimeoutMs) { line ->
             output.appendLine(line)
         }
         if (output.isNotBlank()) Log.d(TAG, "root: $output")
@@ -390,7 +408,7 @@ class BootstrapManager(private val context: Context) {
 
     private fun runSuCommandWithOutput(command: String): String {
         val output = StringBuilder()
-        val result = RootShell.shared.execBlocking(command) { line -> output.appendLine(line) }
+        val result = shell.execBlocking(command) { line -> output.appendLine(line) }
         // The callers grep this for markers, so stderr belongs in it too --
         // the old version merged the streams with redirectErrorStream.
         if (result.stderr.isNotBlank()) output.appendLine(result.stderr)
